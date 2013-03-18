@@ -39,11 +39,13 @@ def parse_config(options):
 
 
 # Node types - the types of nodes that can connect to us / we can connect to.
-NODE_UNKNOWN = 0
+NODE_UNKNOWN = None
 # A full peer; sends and receives messages.
-NODE_PEER = 1
+NODE_PEER = "peer"
 # An event sender; only sends messages.
-NODE_SENDER = 2
+NODE_SENDER = "sender"
+
+NODE_TYPES = [NODE_PEER, NODE_SENDER]
 
 
 # The send-multiqueue
@@ -164,10 +166,10 @@ class VClock(Jsonable):
 #
 # Note: "packet" does NOT mean a TCP packet. we're using the term for our own
 # purposes. I wish I knew a better one.
-PACKET_OPEN = "open"
-PACKET_CLOSE = "close"
+PACKET_INIT = "init"
+PACKET_QUIT = "quit"
 PACKET_MESSAGE = "message"
-PACKET_TYPES = [PACKET_OPEN, PACKET_CLOSE, PACKET_MESSAGE]
+PACKET_TYPES = [PACKET_INIT, PACKET_QUIT, PACKET_MESSAGE]
 
 # A packet.
 class Packet(Jsonable):
@@ -187,17 +189,17 @@ class Packet(Jsonable):
 def PacketMessage(message):
     return Packet(type=PACKET_MESSAGE, message=message)
 
-def PacketOpenPeer(peer_id, vclock):
-    return Packet(type=PACKET_OPEN,
+def PacketInitPeer(peer_id, vclock):
+    return Packet(type=PACKET_INIT,
                   node_type=NODE_PEER,
                   peer_id=peer_id,
                   vclock=vclock)
 
-def PacketOpenSender():
-    return Packet(type=PACKET_OPEN, node_type=NODE_SENDER)
+def PacketInitSender():
+    return Packet(type=PACKET_INIT, node_type=NODE_SENDER)
 
-def PacketClose():
-    return Packet(type=PACKET_CLOSE)
+def PacketQuit():
+    return Packet(type=PACKET_QUIT)
 
 # A message, consisting of a source identifier, a timestamp, and a JSON payload.
 class Message(Jsonable):
@@ -262,10 +264,6 @@ class MessageStore(Jsonable):
 
 
 # Handles an individual socket for PeerController
-#
-# todo: reconcile async_chat's use of producers with MultiQueue. may involve
-# destroying MultiQueue. could override writable(), but not sure that would
-# work.
 class SockHandler(asyncore.dispatcher):
     def __init__(self, controller):
         super(SockHandler, self).__init__()
@@ -282,7 +280,10 @@ class SockHandler(asyncore.dispatcher):
         self.expecting = n_bytes
 
     def handle_write(self):
-        raise NotImplemented()  # FIXME
+        # FIXME: need to avoid waiting for writes unless we're a full peer.
+        # otherwise this assert will trip.
+        assert self.node_type == NODE_PEER
+        self.controller.handle_write(self)
 
     def handle_read(self):
         # is self.connected the right thing to loop on?
@@ -314,32 +315,15 @@ class SockHandler(asyncore.dispatcher):
             self.expect(PACKET_LEN_BYTES)
 
     def handle_packet(self, packet):
-        p = Packet.from_string(packet)
-        if self.node_type == NODE_UNKNOWN:
-            assert p.type == PACKET_INIT
-        elif self.node_type == NODE_PEER:
-            if p.type == PACKET_MESSAGE:
-                self.handle_message(p.message)
-            elif p.type == PACKET_QUIT:
-                self.handle_remote_quit()
-            else:
-                assert False    # malformed packet, TODO: handle error
-        else:
-            assert False        # impossible
-
-    def handle_message(self, message):
-        pass                    # FIXME
-
-    def handle_remote_quit(self):
-        pass                    # FIXME
+        p = Packet.from_json(json.loads(packet))
+        self.controller.handle_packet(self, p)
 
 
 # an event handler that manages almost everything else
 class PeerController(object):
-    def __init__(self, io_manager, peer_id, message_store):
+    def __init__(self, peer_id, message_store):
         self.peer_id = peer_id
         self.message_store = message_store
-        self.io = io_manager
         self.queue = MultiQueue()
         # maps from socket ids to their handlers
         self.sockets = {}
@@ -358,62 +342,43 @@ class PeerController(object):
     # - io.close(sock)
     #   Closes & shuts down sock.
 
-    # gets the info for a socket, used to track its state.
-    def info(self, sock): return self.socket_info[self.io.id(sock)]
+    def handle_packet(self, socket, packet):
+        if socket.node_type == NODE_UNKNOWN:
+            assert packet.type == PACKET_INIT
+            # Add the node in
+            self.handle_init(socket, packet)
+        elif socket.node_type in [NODE_PEER, NODE_SENDER]:
+            if packet.type == PACKET_MESSAGE:
+                self.handle_message(socket, packet.message)
+            elif packet.type == PACKET_QUIT:
+                self.handle_quit(socket)
+            else:
+                assert False    # malformed packet, TODO: handle error
+        else:
+            assert False        # unreachable case
+
+    def handle_init(self, socket, packet):
+        # TODO: handle malformed packet node types
+        assert packet.node_type in NODE_TYPES
+        socket.node_type = packet.node_type
+        if socket.node_type == NODE_PEER:
+            # if they're a full peer, we need to get them up to date
+            socket.peer_id = pkt.peer_id
+        # FIXME
+        raise NotImplemented()
+
+    def handle_quit(self, socket):
+        pass                    # FIXME
+
+    def handle_message(self, socket, message):
+        pass                    # FIXME
+
+    def handle_write(self, socket):
+        assert socket.node_type == NODE_PEER
+        pass
 
     # Handles a new connection.
-    def handle_incoming_connection(self, sock):
-        self.socket_info[self.io.id(sock)] = SockInfo()
-        # try to read & write initial data to it
-        self.handle_readable(sock)
-        self.handle_writable(sock)
-
-    def handle_readable(self, sock):
-        info = self.info(sock)
-        info.ibuffer += io.read(sock)
-        while self.parse_ibuffer(info): pass
-        # during parse_ibuffer the ibuffer often turns into a `buffer` rather
-        # than a `str`. But if we leave it this way we're hanging on to a whole
-        # bunch of bytes we don't need.
-        if not isinstance(self.ibuffer, str):
-            self.ibuffer = str(self.ibuffer)
-
-    # returns True if it might have more work to do
-    def parse_ibuffer(self, info):
-        if info.packet_len is None:
-            # we're still receiving the packet length
-            if len(info.ibuffer) < MESSAGE_LEN_BYTES:
-                return False
-            info.packet_len = struct.unpack(
-                MESSAGE_LEN_FMT, info.ibuffer[:MESSAGE_LEN_BYTES])
-            assert info.packet_len >= 0
-            info.ibuffer = buffer(info.ibuffer, MESSAGE_LEN_BYTES)
-        else:
-            # receiving the contents of the packet
-            if len(info.ibuffer) < info.packet_len:
-                return False    # not done yet
-            # we have a packet!
-            self.handle_packet(info.ibuffer[:info.packet_len])
-            info.ibuffer = buffer(info.ibuffer, info.packet_len)
-            info.packet_len = None
-        return True
-
-    def handle_writable(self, sock):
-        info = self.info(sock)
-        # do we have data to send it?
-
-    def handle_disconnect(self, sock): pass
-
-    # Handles a single "packet" - a chunk of bytes forming a complete message.
-    # Usually this is a Message and is passed to handle_message, but there are
-    # also control packets sent (during a connection handshake, for example).
-    #
-    # Only called by handle_readable().
-    def handle_packet(self, peer, data): pass
-
-    # Handles a Message.
-    #
-    # Only called by handle_packet().
-    def handle_message(self, peer, msg): pass
+    def handle_connect(self, sock): pass # FIXME
+    def handle_disconnect(self, sock): pass # FIXME
 
     def shutdown(self): pass

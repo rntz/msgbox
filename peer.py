@@ -46,8 +46,14 @@ class MultiQueue(object):
     def disconnect(self, dest):
         del self.queues[dest]
 
-    def add(self, dest, msg):
-        self.queues[dest].add(msg)
+    # schedules a message to be sent to each destination in `dests`. Returns a
+    # list of exactly those destinations in `dests` which previously had no data
+    # scheduled to be sent to them.
+    def add(self, msg, dests):
+        empty_dests = [d for d in dests if not self.queues[d]]
+        for dest in dests:
+            self.queues[dest].add(msg)
+        return empty_dests
 
     # Tries to send as much data as possible to a given destination. `sender`
     # should be a function that takes a string and returns how much of the

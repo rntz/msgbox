@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from collections import deque, namedtuple
+from collections import deque
 import asyncore
 import bisect
 import json

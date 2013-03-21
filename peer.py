@@ -182,7 +182,7 @@ globals().update({'PACKET_' + t.upper(): t for t in PACKET_TYPES})
 
 # Address types
 ADDRESS_TYPES = "tcp unix"
-globals().update('ADDRESS_' + t.upper(): t for t in ADDRESS_TYPES)
+globals().update({'ADDRESS_' + t.upper(): t for t in ADDRESS_TYPES})
 
 
 # A address (usually of a remote node)

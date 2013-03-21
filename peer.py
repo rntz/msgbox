@@ -9,8 +9,19 @@ import os, os.path
 import socket
 import struct
 import sys
+import time
 
 LISTEN_BACKLOG = 5
+
+# We delay approximately this long between connecting to remotes, to allow
+# ourselves to sync up with the previous remote we connected to. This is a
+# heuristic, not necessary for correctness.
+REMOTE_CONNECT_DELAY_S = 2.0
+
+# The timeout to pass to asyncore.loop(). We'll be stuck in a syscall and unable
+# to respond to signals for approximately this long, so keep it small to allow
+# ctrl-C etc. to work reasonably well.
+ASYNCORE_TIMEOUT_S = 1.0
 
 # format in which packets are sent, using the struct module's format string.
 # this means "big-endian 4-byte unsigned integer".
@@ -124,6 +135,10 @@ class VClock(Jsonable):
         self.times = {}
         if init is not None:
             self.times.update(init)
+
+    def already_happened(self, uid, time):
+        if uid not in self.times: return False
+        return time <= self.times[uid]
 
     def tick(self, uid):
         self.times[uid] += 1
@@ -294,32 +309,24 @@ class ListenHandler(asyncore.dispatcher):
     def writable(self): return False
 
 
-# Handles the IO events on an individual socket for PeerController
-class ConnHandler(asyncore.dispatcher):
-    def __init__(self, sock=None, map=None, reader=None, writer=None):
-        super(ConnHandler, self).__init__(sock=sock, map=map)
+# Handles splitting things into packets
+class PacketDispatcher(asyncore.dispatcher):
+    def __init__(self, **kwargs):
+        super(ConnHandler, self).__init__(**kwargs)
         self.recvd = []
-        self.reader = reader
-        self.writer = writer
         # True if we're reading a packet's length header, False if we're reading
         # its body
         self.reading_header = True
         self.expecting = PACKET_LEN_BYTES
 
-    def readable(): return self.reader is not None
-    def writable(): return self.writer is not None
-
     def expect(self, n_bytes):
         assert self.expecting == 0
         self.expecting = n_bytes
 
-    # must be implemented by subclass
-    def handle_write(self):
-        assert self.writer is not None
-        self.writer()
+    # subclass must implement
+    def handle_packet(self, packet): raise NotImplemented()
 
     def handle_read(self):
-        assert self.reader is not None
         # is self.connected the right thing to loop on?
         while self.connected:
             assert self.expecting > 0
@@ -344,9 +351,51 @@ class ConnHandler(asyncore.dispatcher):
             self.reading_header = False
             self.expect(packet_len)
         else:
-            self.reader(Packet.from_json(json.loads(chunk)))
+            self.handle_packet(Packet.from_json(json.loads(chunk)))
             self.reading_header = True
             self.expect(PACKET_LEN_BYTES)
+
+
+# Handles the IO on a connection to another node
+class ConnHandler(PacketDispatcher):
+    def __init__(self, parent, **kwargs):
+        super(Handler, self).__init__(map=parent.socket_map, **kwargs)
+        self.parent = parent
+        self.reader_coro = None
+        self.writable_ = False
+
+    def readable(self): return self.reader_coro is not None
+    def writable(self): return self.writable_
+
+    def make_writable(self, writable=True): self.writable_ = writable
+
+    def handle_packet(self, packet):
+        self.reader_coro.send(packet)
+
+    def handle_write(self):
+        assert self.writable_
+        self.parent.handle_write(self)
+
+    def handle_close(self):
+        raise NotImplemented()  # FIXME
+
+class IncomingHandler(ConnHandler):
+    def __init__(self, parent, sock):
+        super(IncomingHandler, self).__init__(parent, sock=sock)
+        self.reader_coro = parent.incoming_reader(self)
+        self.reader_coro.next()
+
+class OutgoingHandler(ConnHandler):
+    def __init__(self, parent, address):
+        super(OutgoingHandler, self).__init__(parent)
+        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.connect(address)
+
+    def handle_connect(self):
+        self.parent.peers.add(self)
+        # start up a reader coro & hook us up to the write-handler
+        self.reader_coro = self.parent.outgoing_reader(self)
+        self.reader_coro.next()
 
 
 # deals with IO and shit
@@ -363,10 +412,37 @@ class Peer(object):
         self.vclock = vclock
         self.message_store = message_store
         self.remotes = remotes  # remotes to connect to
-        self.listen_socket = ListenSock(controller=self, sock=listen_socket)
+        self.listen_socket = ListenHandler(controller=self, sock=listen_socket)
 
     def run(self):
-        raise NotImplemented()  # FIXME
+        # start listening on listening socket
+        listen_socket.listen(LISTEN_BACKLOG)
+
+        # start trying to connect to remotes
+        for remote in remotes:
+            # try to connect to the remote
+            address = (remote['host'], remote['port'])
+            sock = OutgoingHandler(self, address)
+            self.connect(sock)
+
+            # wait for events until the appropriate time delay has passed
+            time_begin = time.time()
+            elapsed = 0
+            while elapsed < REMOTE_CONNECT_DELAY:
+                self.loop(timeout = REMOTE_CONNECT_DELAY - elapsed,
+                          count = 1)
+                elapsed = time.now() - time_begin
+
+        # wait for events
+        self.loop()
+        # FIXME: deal with shutting down once all open channels have been
+        # closed.
+        raise NotImplemented()
+
+    def loop(self, **kwargs):
+        kwargs['timeout'] = min(ASYNCORE_TIMEOUT_S,
+                                kwargs.get('timeout', ASYNCORE_TIMEOUT_S))
+        asyncore.loop(map = self.socket_map, **kwargs)
 
     def connect(self, sock):
         assert sock.connected   # TODO: hackish, relies on dispatcher internals
@@ -379,14 +455,6 @@ class Peer(object):
         assert sock not in self.peers
         self.sockets.remove(sock)
         self.queue.disconnect(sock)
-
-    def make_handler(self, sock, coro_maker, writable=False):
-        handler = ConnHandler(sock=sock, map=self.socket_map)
-        coro = coro_maker(handler)
-        coro.next()             # make sure calls to coro.send work
-        handler.reader = coro.send
-        if writable:
-            handler.writer = lambda: self.handle_write(handler)
 
     # Schedules packets for sending to a list of sockets.
     def send_many(self, socks, packets):
@@ -463,7 +531,16 @@ class Peer(object):
             for m in msgs: yield m
 
     def handle_message(self, message, recvd_from=None):
-        raise NotImplemented()  # FIXME
+        # if we haven't already seen the message...
+        if self.vclock.already_happened(message.source, message.timestamp):
+            return
+        # ... then add it to the store, update our vclock, ...
+        self.vclock.update(message.source, message.timestamp)
+        self.message_store.add(message)
+        # ... and send it on to all our neighboring peers (except the one that
+        # sent it to us)
+        dests = (x for x in self.peers if x is not recvd_from)
+        self.send_one(dests, PacketMessage(message))
 
     def handle_write(self, sock):
         self.try_sending_to(sock)
@@ -471,21 +548,7 @@ class Peer(object):
     def try_sending_to(self, sock):
         assert sock.node_type == NODE_PEER
         def sender(chunk):
-            try:
-                sent = sock.send(chunk, socket.MSG_DONTWAIT)
-            except socket.error as (code, msg):
-                # catch errors due to non-blocking
-                if code not in [errno.EWOULDBLOCK, errno.EAGAIN]:
-                    raise
-                sent = 0
-            return sent
+            return sock.send(chunk)
         self.queue.send(sock, sender)
 
-    # Handles a new connection.
-    def handle_connect(self, sock): pass # FIXME
-    def handle_disconnect(self, sock): pass # FIXME
-
     def shutdown(self): pass
-
-
-# Handles incoming connections

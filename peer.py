@@ -29,29 +29,6 @@ PACKET_LEN_FMT = '>I'
 PACKET_LEN_BYTES = struct.calcsize(PACKET_LEN_FMT)
 assert PACKET_LEN_BYTES == 4
 
-def abort(msg):
-    print >>sys.stderr, msg
-    sys.exit(1)
-
-class Options(optparse.OptionParser):
-    # TODO: usage info
-    def __init__(self):
-        optparse.OptionParser.__init__(self)
-        self.add_option('-f', '--config', dest='config_file', default=None)
-
-def parse_config(options):
-    def test(cond, msg):
-        if not cond: abort(msg + ", quitting")
-
-    cfg_file = options.config_file
-    test(cfg_file, "No config file specified")
-
-    with open(cfg_file, 'r') as f:
-        cfg = json.load(f)
-
-    # TODO: config verification
-    return cfg
-
 
 # The send-multiqueue
 #
@@ -126,6 +103,21 @@ def to_json(obj):
         return obj
 
 
+# A very simple Jsonable type. Useful base type.
+class JsonRecord(Jsonable):
+    def __init__(self, **kwargs):
+        self._attrs = kwargs.keys()
+        for k,v in kwargs.iteritems():
+            setattr(self, k, v)
+
+    @classmethod
+    def from_json(klass, json):
+        return klass(**json)
+
+    def to_json(self):
+        return {k: to_json(getattr(self, v)) for k in self._attrs}
+
+
 # A vector clock, sort of.
 #
 # Not exactly like vector clocks as usually described, as we don't necessarily
@@ -188,21 +180,39 @@ globals().update({'NODE_' + t.upper(): t for t in NODE_TYPES})
 PACKET_TYPES = "hello welcome uptodate bye message".split()
 globals().update({'PACKET_' + t.upper(): t for t in PACKET_TYPES})
 
+# Address types
+ADDRESS_TYPES = "tcp unix"
+globals().update('ADDRESS_' + t.upper(): t for t in ADDRESS_TYPES)
+
 
-# A packet.
-class Packet(Jsonable):
-    def __init__(self, dictionary):
-        self._attrs = dictionary.keys()
-        for k,v in dictionary.iteritems():
-            setattr(self, k, v)
+# A address (usually of a remote node)
+class Address(JsonRecord):
+    def __init__(self, **kwargs):
+        super(Address, self).__init__(**kwargs)
+        assert self.type in ADDRESS_TYPES
+
+    def socket_address_family(self):
+        if self.type == ADDRESS_TCP: return AF_INET
+        elif self.type == ADDRESS_UNIX: return AF_UNIX
+        assert False
+
+    def socket_address(self):
+        if self.type == ADDRESS_TCP: return (self.address, self.port)
+        elif self.type == ADDRESS_UNIX: return self.path
+        assert False
+
+def AddressTCP(host, port):
+    return Address(type=ADDRESS_TCP, host=host, port=port)
+
+def AddressUnix(path):
+    return Address(type=ADDRESS_UNIX, path=path)
+
+
+# A packet
+class Packet(JsonRecord):
+    def __init__(self, **kwargs):
+        super(Packet, self).__init__(**kwargs)
         assert self.type in PACKET_TYPES
-
-    @classmethod
-    def from_json(json):
-        return Packet(json)
-
-    def to_json(self):
-        return {k: to_json(getattr(self, v)) for k in self._attrs}
 
 def PacketMessage(message):
     return Packet(type=PACKET_MESSAGE, message=message)
@@ -225,6 +235,7 @@ def PacketUptodate():
 def PacketBye():
     return Packet(type=PACKET_BYE)
 
+
 # A message, consisting of a source identifier, a timestamp, and a JSON payload.
 class Message(Jsonable):
     def __init__(self, source, timestamp, data):
@@ -289,9 +300,9 @@ class MessageStore(Jsonable):
 
 # Handles the socket we listen on incoming connections for
 class ListenHandler(asyncore.dispatcher):
-    def __init__(self, sock, map, coro):
-        super(ListenHandler, self).__init__(sock=sock, map=map)
-        self.coro = coro
+    def __init__(self, parent, sock=None):
+        super(ListenHandler, self).__init__(map=parent.socket_map, sock=sock)
+        self.parent = parent
 
     def handle_accept(self):
         # TODO: should we try/catch here for EAGAIN/EWOULDBLOCK
@@ -300,7 +311,7 @@ class ListenHandler(asyncore.dispatcher):
         assert pair is not None
         sock, addr = pair
         print 'Incoming connection from %s' % repr(addr) # TODO: remove
-        self.controller.handle_incoming(sock, addr)
+        self.parent.handle_incoming(sock, addr)
 
     def handle_close(self):
         raise NotImplemented()  # FIXME
@@ -388,8 +399,8 @@ class IncomingHandler(ConnHandler):
 class OutgoingHandler(ConnHandler):
     def __init__(self, parent, address):
         super(OutgoingHandler, self).__init__(parent)
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.connect(address)
+        self.create_socket(address.socket_address_family(), socket.SOCK_STREAM)
+        self.connect(address.socket_address())
 
     def handle_connect(self):
         # start up a reader coro & hook us up to the write-handler
@@ -401,7 +412,8 @@ class OutgoingHandler(ConnHandler):
 # I don't really know what this class' responsibilities are
 # it does what it does
 class Peer(object):
-    def __init__(self, listen_socket, peer_id, vclock, message_store, remotes):
+    def __init__(self, peer_id, vclock, message_store,
+                 listen_address, remote_addresses):
         self.queue = MultiQueue()
         self.sockets = set()
         self.socket_map = {}    # for dispatchers
@@ -410,17 +422,20 @@ class Peer(object):
         self.peer_id = peer_id
         self.vclock = vclock
         self.message_store = message_store
-        self.remotes = remotes  # remotes to connect to
-        self.listen_socket = ListenHandler(controller=self, sock=listen_socket)
+        self.listen_address = listen_address
+        self.remote_addresses = remote_addresses # remotes to connect to
 
     def run(self):
         # start listening on listening socket
+        listen_socket = ListenHandler(parent=self)
+        listen_socket.create_socket(listen_address.socket_address_family(),
+                                    socket.SOCK_STREAM)
+        listen_socket.bind(listen_address.socket_address())
         listen_socket.listen(LISTEN_BACKLOG)
 
         # try to connect to remotes
-        for remote in remotes:
+        for address in self.remote_addresses:
             # try to connect to the remote
-            address = (remote['host'], remote['port'])
             sock = OutgoingHandler(self, address)
             self.connect(sock)
 
@@ -585,3 +600,49 @@ class Peer(object):
         self.queue.send(sock, sender)
 
     def shutdown(self): pass
+
+
+# Startup stuff
+def abort(msg):
+    print >>sys.stderr, msg
+    sys.exit(1)
+
+class Options(optparse.OptionParser):
+    # TODO: usage info
+    def __init__(self):
+        optparse.OptionParser.__init__(self)
+        self.add_option('-f', '--config', dest='config_file', default=None)
+
+def parse_config(options):
+    def test(cond, msg):
+        if not cond: abort(msg + ", quitting")
+
+    cfg_file = options.config_file
+    test(cfg_file, "No config file specified")
+
+    with open(cfg_file, 'r') as f:
+        cfg = json.load(f)
+
+    # TODO: config verification
+    return cfg
+
+
+# The main program
+def main(args):
+    parser = Options()
+    (options, args) = parser.parse_args(args)
+    assert not args        # we don't take positional args. TODO: error message.
+    cfg = parse_config(options)
+
+    # actually parse the config
+    ctors = {'peer_id': lambda x: x,
+             'vclock': VClock.from_json,
+             'message_store': MessageStore.from_json,
+             'listen_address': Address.from_json,
+             'remote_addresses': lambda x: map(Address.from_json, x)}
+
+    peer = Peer(**{name: ctor(cfg[name]) for name, ctor in ctors.iteritems()})
+    peer.run()
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

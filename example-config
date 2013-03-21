@@ -1,0 +1,10 @@
+{
+  "peer_id": "example",
+  "vclock": {},
+  "message_store": {},
+  "listen_address": {
+    "type": "unix",
+    "path": "example-listen"
+  },
+  "remote_addresses": []
+}

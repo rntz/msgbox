@@ -154,7 +154,7 @@ class VClock(Jsonable):
     def iteritems(self):
         return self.times.iteritems()
 
-    @classmethod
+    @staticmethod
     def from_json(json):
         return VClock(json)
 
@@ -244,8 +244,8 @@ class Message(Jsonable):
         self.timestamp = timestamp
         self.data = data
 
-    @classmethod
-    def from_json(self, json):
+    @staticmethod
+    def from_json(json):
         return Message(json['source'], json['timestamp'], json['data'])
 
     def to_json(self):
@@ -280,7 +280,7 @@ class MessageStore(Jsonable):
             msgdict[source] = msgs[idx:]
         return msgdict
 
-    @classmethod
+    @staticmethod
     def from_json(json):
         store = MessageStore()
         for source, msgs in json.iteritems():

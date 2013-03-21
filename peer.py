@@ -327,7 +327,7 @@ class PacketDispatcher(asyncore.dispatcher):
     def handle_packet(self, packet): raise NotImplemented()
 
     def handle_read(self):
-        # is self.connected the right thing to loop on?
+        # TODO: is self.connected the right thing to loop on?
         while self.connected:
             assert self.expecting > 0
             got = self.read(self.expecting)
@@ -382,7 +382,7 @@ class ConnHandler(PacketDispatcher):
 class IncomingHandler(ConnHandler):
     def __init__(self, parent, sock):
         super(IncomingHandler, self).__init__(parent, sock=sock)
-        self.reader_coro = parent.incoming_reader(self)
+        self.reader_coro = parent.incoming_coro(self)
         self.reader_coro.next()
 
 class OutgoingHandler(ConnHandler):
@@ -392,9 +392,8 @@ class OutgoingHandler(ConnHandler):
         self.connect(address)
 
     def handle_connect(self):
-        self.parent.peers.add(self)
         # start up a reader coro & hook us up to the write-handler
-        self.reader_coro = self.parent.outgoing_reader(self)
+        self.reader_coro = self.parent.outgoing_coro(self)
         self.reader_coro.next()
 
 
@@ -418,7 +417,7 @@ class Peer(object):
         # start listening on listening socket
         listen_socket.listen(LISTEN_BACKLOG)
 
-        # start trying to connect to remotes
+        # try to connect to remotes
         for remote in remotes:
             # try to connect to the remote
             address = (remote['host'], remote['port'])
@@ -471,24 +470,23 @@ class Peer(object):
 
     # handling incoming connections
     def handle_incoming(self, sock, addr):
-        sock = self.make_handler(sock, self.incoming_reader)
+        sock = IncomingHandler(self, sock=sock)
         self.connect(sock)
 
-    def incoming_reader(self, sock):
+    def incoming_coro(self, sock):
         # TODO: handle unannounced shutdowns. probably need a try/catch block.
-
         hello = yield
         # TODO: couldn't the first packet (or ANY packet) be a BYE?
-        assert hello.type == PACKET_HELLO   # TODO: error handling
-        assert peer.node_type in NODE_TYPES # TODO: error handling
+        assert hello.type == PACKET_HELLO    # TODO: error handling
+        assert hello.node_type in NODE_TYPES # TODO: error handling
         node_type = hello.node_type
 
         # this code could be so much cleaner if `yield from` was available.
         if node_type == NODE_PEER:
             peer_id = sock.peer_id = hello.peer_id
 
-            # add a writer for the peer
-            sock.writer = lambda: self.handle_write(sock)
+            # it's a peer, so we'll be sending data to it
+            sock.make_writable()
 
             # send welcome response and updates for peer
             msgs = self.updates_for(hello.vclock)
@@ -521,9 +519,44 @@ class Peer(object):
             assert False        # unreachable case
 
         # we got a bye.
+        self.disconnect(sock)
         sock.shutdown(socket.SHUT_RDWR)
         sock.close()
+
+    def outgoing_coro(self, sock):
+        sock.make_writable()
+        # send a hello message
+        self.send_one([sock], PacketHelloPeer(self.peer_id, self.vclock))
+
+        # wait for a welcome
+        welcome = yield
+        assert welcome.type == PACKET_WELCOME # TODO: error handling
+        sock.peer_id = welcome.peer_id
+        self.peers.add(sock)
+
+        # queue up updates for peer according to its vclock
+        msgs = self.updates_for(welcome.vclock)
+        self.send_many([sock], (PacketMessage(msg) for msg in msgs))
+
+        # accept messages from peer until we're up-to-date
+        while True:
+            packet = yield
+            if packet.type == PACKET_BYE: break
+            if packet.type == PACKET_UPTODATE:
+                # We don't actually treat the uptodate packet specially. If we
+                # were smart, we might wait to connect to the next remote until
+                # we got this packet. but this isn't strictly necessary, so for
+                # now we don't do it.
+                continue
+            # TODO: handle bad message types
+            assert packet.type == PACKET_MESSAGE
+            self.handle_message(packet.message, recvd_from=sock)
+
+        # got bye
+        self.peers.remove(sock)
         self.disconnect(sock)
+        sock.shutdown(socket.SHUT_RDWR)
+        sock.close()
 
     def updates_for(self, vclock):
         msgdict = self.message_store.messages_after_vclock(vclock)

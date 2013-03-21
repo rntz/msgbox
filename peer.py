@@ -181,7 +181,7 @@ PACKET_TYPES = "hello welcome uptodate bye message".split()
 globals().update({'PACKET_' + t.upper(): t for t in PACKET_TYPES})
 
 # Address types
-ADDRESS_TYPES = "tcp unix"
+ADDRESS_TYPES = "tcp unix".split()
 globals().update({'ADDRESS_' + t.upper(): t for t in ADDRESS_TYPES})
 
 
@@ -192,8 +192,8 @@ class Address(JsonRecord):
         assert self.type in ADDRESS_TYPES
 
     def socket_address_family(self):
-        if self.type == ADDRESS_TCP: return AF_INET
-        elif self.type == ADDRESS_UNIX: return AF_UNIX
+        if self.type == ADDRESS_TCP: return socket.AF_INET
+        elif self.type == ADDRESS_UNIX: return socket.AF_UNIX
         assert False
 
     def socket_address(self):
@@ -301,7 +301,7 @@ class MessageStore(Jsonable):
 # Handles the socket we listen on incoming connections for
 class ListenHandler(asyncore.dispatcher):
     def __init__(self, parent, sock=None):
-        super(ListenHandler, self).__init__(map=parent.socket_map, sock=sock)
+        asyncore.dispatcher.__init__(self, map=parent.socket_map, sock=sock)
         self.parent = parent
 
     def handle_accept(self):
@@ -323,7 +323,7 @@ class ListenHandler(asyncore.dispatcher):
 # Handles splitting things into packets
 class PacketDispatcher(asyncore.dispatcher):
     def __init__(self, **kwargs):
-        super(ConnHandler, self).__init__(**kwargs)
+        asyncore.dispatcher.__init__(self, **kwargs)
         self.recvd = []
         # True if we're reading a packet's length header, False if we're reading
         # its body
@@ -370,7 +370,7 @@ class PacketDispatcher(asyncore.dispatcher):
 # Handles the IO on a connection to another node
 class ConnHandler(PacketDispatcher):
     def __init__(self, parent, **kwargs):
-        super(Handler, self).__init__(map=parent.socket_map, **kwargs)
+        PacketDispatcher.__init__(self, map=parent.socket_map, **kwargs)
         self.parent = parent
         self.reader_coro = None
         self.writable_ = False
@@ -392,13 +392,13 @@ class ConnHandler(PacketDispatcher):
 
 class IncomingHandler(ConnHandler):
     def __init__(self, parent, sock):
-        super(IncomingHandler, self).__init__(parent, sock=sock)
+        ConnHandler.__init__(self, parent, sock=sock)
         self.reader_coro = parent.incoming_coro(self)
         self.reader_coro.next()
 
 class OutgoingHandler(ConnHandler):
     def __init__(self, parent, address):
-        super(OutgoingHandler, self).__init__(parent)
+        ConnHandler.__init__(self, parent)
         self.create_socket(address.socket_address_family(), socket.SOCK_STREAM)
         self.connect(address.socket_address())
 
@@ -428,9 +428,9 @@ class Peer(object):
     def run(self):
         # start listening on listening socket
         listen_socket = ListenHandler(parent=self)
-        listen_socket.create_socket(listen_address.socket_address_family(),
+        listen_socket.create_socket(self.listen_address.socket_address_family(),
                                     socket.SOCK_STREAM)
-        listen_socket.bind(listen_address.socket_address())
+        listen_socket.bind(self.listen_address.socket_address())
         listen_socket.listen(LISTEN_BACKLOG)
 
         # try to connect to remotes

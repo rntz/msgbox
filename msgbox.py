@@ -87,6 +87,11 @@ class Jsonable(object):
     def to_json(self):
         raise NotImplementedError()
 
+    def __str__(self):
+        return '%s.from_json(%s)' % (
+            type(self).__name__,
+            self.to_json())
+
 def to_json(obj):
     if isinstance(obj, Jsonable):
         return obj.to_json()
@@ -103,7 +108,12 @@ class JsonRecord(Jsonable):
 
     @classmethod
     def from_json(klass, json):
-        return klass(**json)
+        obj = klass(**json)
+        obj.post_from_json()
+        return obj
+
+    # in case fields need to be validated, etc.
+    def post_from_json(self): return
 
     def to_json(self):
         return {k: to_json(getattr(self, k)) for k in self._attrs}
@@ -156,9 +166,15 @@ class Packet(JsonRecord):
         header = struct.pack(Packet.HEADER_FMT, len(data))
         return header + data
 
+    def post_from_json(self):
+        for field, typ in [('vclock', VClock),
+                           ('message', Message)]:
+            if not hasattr(self, field): continue
+            setattr(self, field, typ.from_json(getattr(self, field)))
+
     @staticmethod
     def parse_header(header):
-        (packet_len,) = struct.unpack(Packet.HEADER_FMT, chunk)
+        (packet_len,) = struct.unpack(Packet.HEADER_FMT, header)
         return packet_len
 
 def PacketMessage(message):
@@ -236,8 +252,13 @@ class VClock(Jsonable):
             assert v >= 0
             self[k] = max(self.get(k,0), v)
 
-    def iteritems(self):
-        return self.times.iteritems()
+    # imitations of methods from dict
+    def __contains__(self, x): return x in self.times
+    def __len__(self): return len(self.times)
+    def __iter__(self): return iter(self.times)
+    def keys(self): return self.times.keys()
+    def iterkeys(self): return self.times.iterkeys()
+    def iteritems(self): return self.times.iteritems()
 
     @staticmethod
     def from_json(json):
@@ -258,9 +279,9 @@ class MessageStore(Jsonable):
         self.msgs = {}
 
     def add(self, msg):
-        lst = self.msgs.setdefault(msgs.source,[])
+        lst = self.msgs.setdefault(msg.source,[])
         # check ordering constraint
-        assert (not lst) or msgs.timestamp > lst[-1].timestamp
+        assert (not lst) or msg.timestamp > lst[-1].timestamp
         lst.append(msg)
 
     def messages_after_vclock(self, vclock):
@@ -321,7 +342,9 @@ class PacketDispatcher(asyncore.dispatcher):
     # TODO: remove this, it's for debugging purposes.
     # alternatively, make it suck less.
     def handle_error(self):
+        print
         traceback.print_exc()
+        print
         asyncore.dispatcher.handle_error(self)
 
     # subclass must implement

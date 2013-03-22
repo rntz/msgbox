@@ -251,6 +251,8 @@ class Peer(object):
             for m in msgs: yield m
 
     def handle_message(self, message, recvd_from=None):
+        # TODO: remove debug print
+        print 'handling message: %s' % message
         # if we haven't already seen the message...
         if self.vclock.already_happened(message.source, message.timestamp):
             return

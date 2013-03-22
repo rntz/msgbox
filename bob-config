@@ -1,0 +1,14 @@
+{
+  "peer_id": "bob",
+  "vclock": {},
+  "message_store": {},
+  "listen_address": {
+    "type": "unix",
+    "path": "example/bob-listen"
+  },
+  "remote_addresses": [ {
+      "type": "unix",
+      "path": "example/alice-listen"
+    }
+  ]
+}

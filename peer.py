@@ -41,9 +41,6 @@ class ListenHandler(asyncore.dispatcher):
     def handle_close(self):
         raise NotImplementedError()  # FIXME
 
-    # def readable(self): return False
-    # def writable(self): return False
-
 
 # Handles the IO on a connection to another node
 class ConnHandler(PacketDispatcher):

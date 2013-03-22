@@ -1,0 +1,6 @@
+{
+  "vclock": { "alice": 1 },
+  "messages": {
+    "alice": [[1, "alice's first message"]]
+  }
+}

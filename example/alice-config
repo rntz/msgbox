@@ -1,11 +1,6 @@
 {
   "peer_id": "alice",
-  "vclock": {
-    "alice": 1
-  },
-  "message_store": {
-    "alice": [[1, "alice's first message"]]
-  },
+  "state": "example/alice-state",
   "listen_address": {
     "type": "unix",
     "path": "example/alice-listen"

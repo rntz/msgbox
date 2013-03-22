@@ -1,11 +1,6 @@
 {
   "peer_id": "bob",
-  "vclock": {
-    "bob": 1
-  },
-  "message_store": {
-    "bob": [[1, "bob's first message"]]
-  },
+  "state": "example/bob-state",
   "listen_address": {
     "type": "unix",
     "path": "example/bob-listen"

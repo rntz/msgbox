@@ -80,19 +80,33 @@ class OutgoingHandler(ConnHandler):
         self.reader_coro.next()
 
 
+# The mutable state (as opposed to mostly-static configuration) of a peer node.
+class State(Jsonable):
+    def __init__(self, vclock, message_store):
+        self.vclock = vclock
+        self.message_store = message_store
+
+    def to_json(self):
+        return {'vclock': self.vclock.to_json(),
+                'messages': self.message_store.to_json()}
+
+    @staticmethod
+    def from_json(json):
+        return State(VClock.from_json(json['vclock']),
+                     MessageStore.from_json(json['messages']))
+
+
 # deals with IO and shit
 # I don't really know what this class' responsibilities are
 # it does what it does
 class Peer(object):
-    def __init__(self, peer_id, vclock, message_store,
-                 listen_address, remote_addresses):
+    def __init__(self, peer_id, state, listen_address, remote_addresses):
         self.queue = MultiQueue()
         self.socket_map = {}    # for dispatchers
         self.peers = set()
 
         self.peer_id = peer_id
-        self.vclock = vclock
-        self.message_store = message_store
+        self.state = state
         self.listen_address = listen_address
         self.remote_addresses = remote_addresses # remotes to connect to
 
@@ -177,7 +191,7 @@ class Peer(object):
 
             # send welcome response and updates for peer
             msgs = self.updates_for(hello.vclock)
-            packets = ([PacketWelcome(self.peer_id, self.vclock)]
+            packets = ([PacketWelcome(self.peer_id, self.state.vclock)]
                        + [PacketMessage(msg) for msg in msgs]
                        + [PacketUptodate()])
             self.send_many([sock], packets)
@@ -214,7 +228,7 @@ class Peer(object):
         print 'starting outgoing coro for %s' % sock
 
         # send a hello message
-        self.send_one([sock], PacketHelloPeer(self.peer_id, self.vclock))
+        self.send_one([sock], PacketHelloPeer(self.peer_id, self.state.vclock))
 
         # wait for a welcome
         welcome = yield
@@ -246,7 +260,7 @@ class Peer(object):
         sock.close()
 
     def updates_for(self, vclock):
-        msgdict = self.message_store.messages_after_vclock(vclock)
+        msgdict = self.state.message_store.messages_after_vclock(vclock)
         for src, msgs in msgdict.iteritems():
             for m in msgs: yield m
 
@@ -254,11 +268,12 @@ class Peer(object):
         # TODO: remove debug print
         print 'handling message: %s' % message
         # if we haven't already seen the message...
-        if self.vclock.already_happened(message.source, message.timestamp):
+        if self.state.vclock.already_happened(message.source,
+                                              message.timestamp):
             return
         # ... then add it to the store, update our vclock, ...
-        self.vclock.update(message.source, message.timestamp)
-        self.message_store.add(message)
+        self.state.vclock.update(message.source, message.timestamp)
+        self.state.message_store.add(message)
         # ... and send it on to all our neighboring peers (except the one that
         # sent it to us)
         dests = (x for x in self.peers if x is not recvd_from)
@@ -307,14 +322,17 @@ def main(args):
     assert not args        # we don't take positional args. TODO: error message.
     cfg = parse_config(options)
 
-    # actually parse the config
+    # Parse the config into arguments for Peer() constructor.
+    def parse_state(filename):
+        with open(filename) as f:
+            return State.from_json(json.load(f))
     ctors = {'peer_id': lambda x: x,
-             'vclock': VClock.from_json,
-             'message_store': MessageStore.from_json,
+             'state': parse_state,
              'listen_address': Address.from_json,
              'remote_addresses': lambda x: map(Address.from_json, x)}
+    kwargs = {name: ctor(cfg[name]) for name, ctor in ctors.iteritems()}
 
-    peer = Peer(**{name: ctor(cfg[name]) for name, ctor in ctors.iteritems()})
+    peer = Peer(**kwargs)
     peer.run()
 
 if __name__ == "__main__":

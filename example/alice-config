@@ -2,8 +2,9 @@
   "peer_id": "alice",
   "state": "example/alice-state",
   "listen_address": {
-    "type": "unix",
-    "path": "example/alice-listen"
+    "type": "tcp",
+    "host": "localhost",
+    "port": 23279
   },
   "remote_addresses": []
 }

@@ -6,8 +6,9 @@
     "path": "example/bob-listen"
   },
   "remote_addresses": [ {
-      "type": "unix",
-      "path": "example/alice-listen"
+      "type": "tcp",
+      "host": "localhost",
+      "port": 23279
     }
   ]
 }

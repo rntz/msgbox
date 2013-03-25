@@ -39,7 +39,7 @@ class ListenHandler(asyncore.dispatcher):
         self.parent.handle_incoming(sock, addr)
 
     def handle_close(self):
-        raise NotImplementedError()  # FIXME
+        raise NotImplementedError()     # FIXME
 
 
 # Handles the IO on a connection to another node
@@ -153,15 +153,15 @@ class Peer(object):
         raise NotImplementedError()
 
     def loop(self):
-        print 'loop'
         # TODO: remove debug print
-        #print 'socket_map: %s' % self.socket_map
-        # print 'going around the loop (%s)' % kwargs
+        print 'loop: %s' % self.socket_map
+
+        assert self.socket_map
         now = time.time()
         self.timers = [t for t in self.timers if not t.try_fire(now)]
         timeout = reduce(min, (t.left(now) for t in self.timers),
                          ASYNCORE_TIMEOUT_S)
-        asyncore.loop(map = self.socket_map, timeout=timeout, count=1)
+        asyncore.loop(count=1, map = self.socket_map, timeout=timeout)
 
     def add_timer(self, delay, callback):
         assert delay >= 0

@@ -21,6 +21,12 @@ REMOTE_CONNECT_DELAY_S = 2.0
 # ctrl-C etc. to work reasonably well.
 ASYNCORE_TIMEOUT_S = 1.0
 
+# log levels
+LOG_LEVELS = 'debug info warn error'.split()
+LOG_LEVEL_NAMES = {i: n for i,n in enumerate(LOG_LEVELS)}
+def log_level_name(i): return LOG_LEVEL_NAMES[i]
+globals().update({'LOG_' + l.upper(): i for i,l in LOG_LEVEL_NAMES.iteritems()})
+
 
 # Handles the socket we listen on incoming connections for
 class ListenHandler(asyncore.dispatcher):
@@ -29,7 +35,6 @@ class ListenHandler(asyncore.dispatcher):
         self.parent = parent
 
     def handle_accept(self):
-        print 'handle_accept() called' # TODO: remove debug print
         # TODO: should we try/catch here for EAGAIN/EWOULDBLOCK
         pair = self.accept()
         # handle_accept() shouldn't be called unless we can accept, I think?
@@ -61,17 +66,14 @@ class ConnHandler(PacketDispatcher):
         self.parent.handle_write(self)
 
     def handle_close(self):
-        print '---------- FUX: closing: %s' % self
-        if self.reader_coro is not None:
-            try: self.reader_coro.throw(ClosedError())
-            except StopIteration: pass
-            else: assert False      # should have raised StopIteration
+        assert self.reader_coro is not None
+        try: self.reader_coro.throw(ClosedError())
+        except StopIteration: pass
+        else: assert False      # should have raised StopIteration
 
 # error thrown in a reader coro to indicate connection has closed.
 class ClosedError(Exception): pass
 
-# TODO: we should be marking these unwritable when we have no messages for them,
-# otherwise we'll spin the CPU by waking up all the time in the select() loop.
 class IncomingHandler(ConnHandler):
     def __init__(self, parent, sock):
         ConnHandler.__init__(self, parent, sock=sock)
@@ -104,29 +106,10 @@ class State(Jsonable):
                      MessageStore.from_json(json['messages']))
 
 
-# Dead simple timer class.
-class Timer(object):
-    def __init__(self, fire_at, callback):
-        self.fire_at = fire_at
-        self.callback = callback
-        self.fired = False
-
-    def left(self, now):
-        return self.fire_at - now
-
-    def try_fire(self, now):
-        assert not self.fired
-        if now < self.fire_at:
-            # we don't fire yet
-            return False
-        self.callback()
-        self.fired = True
-        return True
-
-
 # deals with IO and shit
 # I don't really know what this class' responsibilities are
 # it does what it does
+# TODO: deal with shutting down?
 class Peer(object):
     def __init__(self, peer_id, state, listen_address, remote_addresses):
         self.queue = MultiQueue()
@@ -139,6 +122,17 @@ class Peer(object):
         self.listen_address = listen_address
         self.remote_addresses = remote_addresses # remotes to connect to
 
+    # ----- Logging -----
+    def log(self, level, msg, *args):
+        # TODO: real logging
+        name = log_level_name(level).upper()
+        print >>sys.stderr, '---------- %s: %s' % (name, (msg % args))
+
+    def debug(self, msg, *args): self.log(LOG_DEBUG, msg, *args)
+    def info(self, msg, *args): self.log(LOG_INFO, msg, *args)
+    def warn(self, msg, *args): self.log(LOG_WARN, msg, *args)
+
+    # ----- Main loop -----
     def run(self):
         # start listening on listening socket
         listen_socket = ListenHandler(parent=self)
@@ -146,31 +140,24 @@ class Peer(object):
                                     socket.SOCK_STREAM)
         listen_socket.bind(self.listen_address.socket_address())
         listen_socket.listen(LISTEN_BACKLOG)
-        # TODO: remove debug print
-        print 'listening on %s' % self.listen_address
+        self.info('listening on %s', self.listen_address)
 
         # kickstart the remote-connection process
         if self.remote_addresses:
             self.try_remote_connect()
 
         # wait for events
-        while True:
-            self.loop()
-        # FIXME: deal with shutting down once all open channels have been
-        # closed.
-        raise NotImplementedError()
+        while True: self.loop()
 
     def loop(self):
-        # TODO: remove debug print
-        print 'loop'
-
         assert self.socket_map
-        now = time.time()
-        self.timers = [t for t in self.timers if not t.try_fire(now)]
-        timeout = reduce(min, (t.left(now) for t in self.timers),
-                         ASYNCORE_TIMEOUT_S)
+        timeout = self.check_timers()
         asyncore.loop(count=1, map = self.socket_map, timeout=timeout)
 
+    def shutdown(self):
+        raise NotImplementedError()     # FIXME
+
+    # ----- Timers ----
     def add_timer(self, delay, callback):
         assert delay >= 0
         if delay == 0:
@@ -178,12 +165,18 @@ class Peer(object):
         else:
             self.timers.append(Timer(time.time() + delay, callback))
 
+    def check_timers(self):
+        now = time.time()
+        self.timers = [t for t in self.timers if not t.try_fire(now)]
+        return reduce(min, (t.left(now) for t in self.timers),
+                      ASYNCORE_TIMEOUT_S)
+
+    # ----- Remote connections ----
     def try_remote_connect(self):
         assert self.remote_addresses
         address = self.remote_addresses.pop()
+        self.info('connecting to remote at %r', address)
 
-        # TODO: remove debug print
-        print 'connecting to remote at %s' % address
         sock = OutgoingHandler(self)
         sock.create_socket(address.socket_address_family(), socket.SOCK_STREAM)
         # TODO: error handling (eg. ECONNREFUSED)
@@ -192,9 +185,9 @@ class Peer(object):
         if self.remote_addresses:
             self.add_timer(REMOTE_CONNECT_DELAY_S, self.try_remote_connect)
         else:
-            # TODO: remove debug print
-            print 'finished starting connection attempts for remotes'
+            self.info('finished starting connection attempts for remotes')
 
+    # ----- Sending packets -----
     # Schedules packets for sending to a list of sockets.
     def send_many(self, socks, packets):
         newly_active = self.queue.enqueue(socks,
@@ -205,29 +198,26 @@ class Peer(object):
     def send_one(self, socks, packet):
         return self.send_many(socks, [packet])
 
-    def add_peer(self, sock, peer_id):
-        assert peer_id not in self.peers
-        assert getattr(sock, 'peer_id', None) is None
-        sock.peer_id = peer_id
-        self.peers[peer_id] = sock
+    # Sends as much data to a sock as it will accept without blocking
+    def try_sending_to(self, sock):
+        def sender(chunk):
+            return sock.send(chunk)
+        self.queue.send(sock, sender)
+        # We should wait for write events on `sock` if and only if it has more
+        # data queued for it.
+        sock.mark_writable(self.queue.has_queued_data(sock))
 
-    def disconnect(self, sock):
-        if hasattr(sock, 'peer_id'):
-            assert sock is self.peers[sock.peer_id]
-            del self.peers[sock.peer_id]
-        sock.close()
-
-    # handling incoming connections
+    # ----- Incoming connections -----
     def handle_incoming(self, sock, addr):
-        # TODO: remove debug print
-        print 'accepted incoming connection'
+        # TODO: print useful address information
+        self.info('accepted incoming connection from %r', addr)
         IncomingHandler(self, sock=sock)
 
     def incoming_coro(self, sock):
         # TODO: handle unannounced shutdowns. probably need a try/catch block.
         try:
             # TODO: remove debug print
-            print 'starting incoming coro for %s' % sock
+            self.debug('starting incoming coro for %s', sock)
 
             hello = yield
             # TODO: couldn't the first packet (or ANY packet) be a BYE?
@@ -266,15 +256,15 @@ class Peer(object):
             assert False        # unreachable
 
         except ClosedError:
-            # TODO: logging
-            # TODO: remove debug print
-            print "---------- incoming was closed"
+            # TODO: better log formatting for sockets
+            self.info('incoming socket closed from other side: %s', sock)
             self.disconnect(sock)
 
+    # ----- Outgoing connections -----
     def outgoing_coro(self, sock):
         try:
             # TODO: remove debug print
-            print 'starting outgoing coro for %s' % sock
+            self.debug('starting outgoing coro for %s', sock)
 
             # send a hello message
             self.send_one([sock], PacketHelloPeer(self.peer_id,
@@ -294,7 +284,7 @@ class Peer(object):
                 packet = yield
                 if packet.type == PACKET_UPTODATE:
                     # TODO: remove debug print
-                    print '---------- UPTODATE'
+                    self.debug('up-to-date on outgoing socket')
                     # We don't actually treat the uptodate packet specially. If
                     # we were smart, we might wait to connect to the next remote
                     # until we got this packet. but this isn't strictly
@@ -307,43 +297,47 @@ class Peer(object):
             assert False        # unreachable
 
         except ClosedError:
-            # TODO: logging
-            # TODO: remove debug print
-            print "---------- outgoing was closed"
+            # TODO: better log formatting for sockets
+            self.info('outgoing socket closed from other side: %s', sock)
             self.disconnect(sock)
+
+    # ----- Peer utility methods -----
+    def add_peer(self, sock, peer_id):
+        assert peer_id not in self.peers
+        assert getattr(sock, 'peer_id', None) is None
+        sock.peer_id = peer_id
+        self.peers[peer_id] = sock
+
+    def disconnect(self, sock):
+        if hasattr(sock, 'peer_id'):
+            assert sock is self.peers[sock.peer_id]
+            del self.peers[sock.peer_id]
+        sock.close()
 
     def updates_for(self, vclock):
         msgdict = self.state.message_store.messages_after_vclock(vclock)
         for src, msgs in msgdict.iteritems():
             for m in msgs: yield m
 
+    # ----- Event handling -----
+    def handle_write(self, sock):
+        self.try_sending_to(sock)
+
     def handle_message(self, message, recvd_from=None):
         # TODO: remove debug print
-        print 'handling message: %s' % message
+        self.debug('handling message: %s', message)
         # if we haven't already seen the message...
         if self.state.vclock.already_happened(message.source,
                                               message.timestamp):
             return
         # ... then add it to the store, update our vclock, ...
+        # TODO: schedule state-save?
         self.state.vclock.update(message.source, message.timestamp)
         self.state.message_store.add(message)
         # ... and send it on to all our neighboring peers (except the one that
         # sent it to us)
         dests = (x for x in self.peers.values() if x is not recvd_from)
         self.send_one(dests, PacketMessage(message))
-
-    def handle_write(self, sock):
-        self.try_sending_to(sock)
-
-    def try_sending_to(self, sock):
-        def sender(chunk):
-            return sock.send(chunk)
-        self.queue.send(sock, sender)
-        # we should wait for write events on `sock` if and only if it has more
-        # data queued for it.
-        sock.mark_writable(self.queue.has_queued_data(sock))
-
-    def shutdown(self): pass
 
 
 # Startup stuff

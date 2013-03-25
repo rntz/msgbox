@@ -5,7 +5,7 @@ import errno
 import json
 import socket
 import struct
-import traceback                # TODO: remove, only used for debugging
+import types
 
 def def_enum(name, typestring):
     types = typestring.split()
@@ -24,6 +24,33 @@ def_enum('packet', 'hello welcome uptodate message')
 # Address types
 def_enum('address', 'tcp unix')
 
+# takes a sequence or generator, and returns a sequence. in other words, takes
+# something representing a sequence and makes sure it *persistently* represents
+# the same sequence (unlike generators, which get consumed when iterated over).
+def persist_seq(seq):
+    if isinstance(seq, (tuple, list, set)): return seq
+    return tuple(seq)
+
+
+# Dead simple timer class. Is fed all actual information about time by client.
+class Timer(object):
+    def __init__(self, fire_at, callback):
+        self.fire_at = fire_at
+        self.callback = callback
+        self.fired = False
+
+    def left(self, now):
+        return self.fire_at - now
+
+    def try_fire(self, now):
+        assert not self.fired
+        if now < self.fire_at:
+            # we don't fire yet
+            return False
+        self.callback()
+        self.fired = True
+        return True
+
 
 # The send-multiqueue
 #
@@ -31,29 +58,26 @@ def_enum('address', 'tcp unix')
 # convenience; chunks are sent with no headers or dividers between them) to send
 # to a set of destinations. Chunks should be strings. Destinations can be any
 # hashable value.
-#
-# TODO: use buffer() objects instead of copying strings
 class MultiQueue(object):
     def __init__(self):
         self.queues = defaultdict(self.Queue)
 
     # returns True iff `dest` has data queues for it.
     def has_queued_data(self, dest):
-        return dest in self.queues and bool(self.queues[dest])
+        return bool(self.queues.get(dest))
 
     # Schedules a list of chunks to be sent to each destination in `dests`
     # (every chunk gets sent to every destination; first chunk in the list gets
     # sent first). Returns a list of exactly those destinations in `dests` which
     # previously had no data scheduled to be sent to them, but now do.
     def enqueue(self, dests, chunks):
-        # need to not be generators, otherwise they will be consumed
-        dests = tuple(dests)
-        chunks = tuple(chunks)
-        # chunks also needs to not be a generator so that this test works as
-        # desired.
+        # only keep nonempty chunks
+        chunks = tuple(x for x in chunks if len(x))
+        # if we have no data to enqueue, we're done.
         if not chunks: return []
-
-        empty_dests = tuple(d for d in dests if not self.queues[d])
+        # we'll use this more than once; avoid consuming it if it's a generator.
+        dests = persist_seq(dests)
+        empty_dests = [d for d in dests if not self.queues[d]]
         for dest in dests:
             self.queues[dest].extend(chunks)
         return empty_dests
@@ -71,12 +95,14 @@ class MultiQueue(object):
     def send(self, dest, sender):
         self.queues[dest].send(sender)
 
-    # a queue for a particular destination
-    class Queue(object):
+    # A queue for a particular destination.
+    class Queue(deque):
         def __init__(self):
+            self.offset = 0
             self.chunks = deque()
 
-        def __len__(self): return len(self.chunks)
+        def __len__(self):
+            return len(self.chunks)
 
         def extend(self, chunks):
             self.chunks.extend(chunks)
@@ -84,25 +110,26 @@ class MultiQueue(object):
         def send(self, sender):
             while self.chunks:
                 chunk = self.chunks[0]
-                sent = sender(chunk)
-                if not sent:
-                    return
-                elif sent == len(chunk):
+                sent = sender(buffer(chunk, self.offset))
+                self.offset += sent
+                if not sent: return
+                elif self.offset == len(chunk):
+                    self.offset = 0
                     self.chunks.popleft()
                 else:
-                    assert 0 < sent < len(chunk)
-                    self.chunks[0] = chunk[sent:]
+                    assert 0 < self.offset < len(chunk)
 
 
 # Turning things into JSON reasonably generically
 class Jsonable(object):
-    def to_json(self):
-        raise NotImplementedError()
+    # subclasses must implement
+    def to_json(self): raise NotImplementedError()
+    @staticmethod
+    def from_json(): raise NotImplementedError()
 
     def __repr__(self):
-        return '%s.from_json(%s)' % (
-            type(self).__name__,
-            self.to_json())
+        return '%s.from_json(%s)' % (type(self).__name__,
+                                     self.to_json())
 
 def to_json(obj):
     if isinstance(obj, Jsonable):
@@ -350,14 +377,6 @@ class PacketDispatcher(asyncore.dispatcher):
             else:
                 raise
 
-    # TODO: remove this, it's for debugging purposes.
-    # alternatively, make it suck less.
-    def handle_error(self):
-        print
-        traceback.print_exc()
-        print
-        asyncore.dispatcher.handle_error(self)
-
     # subclass must implement
     def handle_packet(self, packet): raise NotImplementedError()
 
@@ -389,5 +408,3 @@ class PacketDispatcher(asyncore.dispatcher):
             self.handle_packet(Packet.from_json(json.loads(chunk)))
             self.reading_header = True
             self.expect(Packet.HEADER_LEN)
-
-

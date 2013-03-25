@@ -39,15 +39,23 @@ class MultiQueue(object):
     def __init__(self):
         self.queues = defaultdict(self.Queue)
 
+    # returns True iff `dest` has data queues for it.
+    def has_queued_data(self, dest):
+        return dest in self.queues and bool(self.queues[dest])
+
     # Schedules a list of chunks to be sent to each destination in `dests`
     # (every chunk gets sent to every destination; first chunk in the list gets
     # sent first). Returns a list of exactly those destinations in `dests` which
     # previously had no data scheduled to be sent to them, but now do.
     def enqueue(self, dests, chunks):
-        if not chunks: return []
-        # chunks needs to not be a generator, otherwise it will be consumed
+        # need to not be generators, otherwise they will be consumed
+        dests = tuple(dests)
         chunks = tuple(chunks)
-        empty_dests = [d for d in dests if not self.queues[d]]
+        # chunks also needs to not be a generator so that this test works as
+        # desired.
+        if not chunks: return []
+
+        empty_dests = tuple(d for d in dests if not self.queues[d])
         for dest in dests:
             self.queues[dest].extend(chunks)
         return empty_dests

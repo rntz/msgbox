@@ -20,7 +20,7 @@ REMOTE_CONNECT_DELAY_S = 2.0
 # The timeout to pass to asyncore.loop(). We'll be stuck in a syscall and unable
 # to respond to signals for approximately this long, so keep it small to allow
 # ctrl-C etc. to work reasonably well.
-ASYNCORE_TIMEOUT_S = 5.0
+ASYNCORE_TIMEOUT_S = 1.0
 
 
 # Handles the socket we listen on incoming connections for
@@ -48,8 +48,11 @@ class ConnHandler(PacketDispatcher):
         PacketDispatcher.__init__(self, map=parent.socket_map, **kwargs)
         self.parent = parent
         self.reader_coro = None
+        self.writable_ = False
 
     def readable(self): return self.reader_coro is not None
+    def writable(self): return self.writable_
+    def mark_writable(self, writable=True): self.writable_ = writable
 
     def handle_packet(self, packet):
         self.reader_coro.send(packet)
@@ -60,15 +63,13 @@ class ConnHandler(PacketDispatcher):
     def handle_close(self):
         raise NotImplementedError()  # FIXME
 
+# TODO: we should be marking these unwritable when we have no messages for them,
+# otherwise we'll spin the CPU by waking up all the time in the select() loop.
 class IncomingHandler(ConnHandler):
     def __init__(self, parent, sock):
         ConnHandler.__init__(self, parent, sock=sock)
         self.reader_coro = parent.incoming_coro(self)
         self.reader_coro.next()
-        self.writable_ = False
-
-    def writable(self): return self.writable_
-    def make_writable(self, writable=True): self.writable_ = writable
 
 class OutgoingHandler(ConnHandler):
     def __init__(self, parent):
@@ -96,6 +97,26 @@ class State(Jsonable):
                      MessageStore.from_json(json['messages']))
 
 
+# Dead simple timer class.
+class Timer(object):
+    def __init__(self, fire_at, callback):
+        self.fire_at = fire_at
+        self.callback = callback
+        self.fired = False
+
+    def left(self, now):
+        return self.fire_at - now
+
+    def try_fire(self, now):
+        assert not self.fired
+        if now < self.fire_at:
+            # we don't fire yet
+            return False
+        self.callback()
+        self.fired = True
+        return True
+
+
 # deals with IO and shit
 # I don't really know what this class' responsibilities are
 # it does what it does
@@ -103,7 +124,8 @@ class Peer(object):
     def __init__(self, peer_id, state, listen_address, remote_addresses):
         self.queue = MultiQueue()
         self.socket_map = {}    # for dispatchers
-        self.peers = set()
+        self.peers = {}
+        self.timers = []
 
         self.peer_id = peer_id
         self.state = state
@@ -120,40 +142,53 @@ class Peer(object):
         # TODO: remove debug print
         print 'listening on %s' % self.listen_address
 
-        # try to connect to remotes
-        for address in self.remote_addresses:
-            # try to connect to the remote
-            # TODO: remove debug print
-            print 'connecting to remote at %s' % address
-            sock = OutgoingHandler(self)
-            sock.create_socket(address.socket_address_family(),
-                               socket.SOCK_STREAM)
-            sock.connect(address.socket_address())
-
-            # wait for events until the appropriate time delay has passed
-            time_begin = time.time()
-            elapsed = 0
-            while elapsed < REMOTE_CONNECT_DELAY_S:
-                self.loop(timeout = REMOTE_CONNECT_DELAY_S - elapsed,
-                          count = 1)
-                elapsed = time.time() - time_begin
-
-        # TODO: remove debug print
-        print 'connection attempts started for all remotes'
+        # kickstart the remote-connection process
+        self.schedule_remote_connect()
 
         # wait for events
-        self.loop()
+        while True:
+            self.loop()
         # FIXME: deal with shutting down once all open channels have been
         # closed.
         raise NotImplementedError()
 
-    def loop(self, **kwargs):
+    def loop(self):
+        print 'loop'
         # TODO: remove debug print
         #print 'socket_map: %s' % self.socket_map
         # print 'going around the loop (%s)' % kwargs
-        kwargs['timeout'] = min(ASYNCORE_TIMEOUT_S,
-                                kwargs.get('timeout', ASYNCORE_TIMEOUT_S))
-        asyncore.loop(map = self.socket_map, **kwargs)
+        now = time.time()
+        self.timers = [t for t in self.timers if not t.try_fire(now)]
+        timeout = reduce(min, (t.left(now) for t in self.timers),
+                         ASYNCORE_TIMEOUT_S)
+        asyncore.loop(map = self.socket_map, timeout=timeout, count=1)
+
+    def add_timer(self, delay, callback):
+        assert delay >= 0
+        if delay == 0:
+            callback()
+        else:
+            self.timers.append(Timer(time.time() + delay, callback))
+
+    def try_remote_connect(self):
+        assert self.remote_addresses
+        address = self.remote_addresses.pop()
+
+        # TODO: remove debug print
+        print 'connecting to remote at %s' % address
+        sock = OutgoingHandler(self)
+        sock.create_socket(address.socket_address_family(), socket.SOCK_STREAM)
+        sock.connect(address.socket_address())
+
+        self.schedule_remote_connect()
+
+    def schedule_remote_connect(self):
+        # schedule a connection to the next remote
+        if self.remote_addresses:
+            self.add_timer(REMOTE_CONNECT_DELAY_S, self.try_remote_connect)
+        else:
+            # TODO: remove debug print
+            print 'finished starting connection attempts for remotes'
 
     # Schedules packets for sending to a list of sockets.
     def send_many(self, socks, packets):
@@ -185,9 +220,8 @@ class Peer(object):
         # this code could be so much cleaner if `yield from` was available.
         if node_type == NODE_PEER:
             peer_id = sock.peer_id = hello.peer_id
-
-            # it's a peer, so we'll be sending data to it
-            sock.make_writable()
+            assert peer_id not in self.peers
+            self.peers[peer_id] = sock
 
             # send welcome response and updates for peer
             msgs = self.updates_for(hello.vclock)
@@ -205,7 +239,8 @@ class Peer(object):
                 self.handle_message(packet.message, recvd_from=sock)
 
             # got a bye from a peer
-            self.peers.remove(sock)
+            assert sock is self.peers[sock.peer_id]
+            del self.peers[sock.peer_id]
 
         elif node_type == NODE_SENDER:
             # just read messages from them.
@@ -234,7 +269,7 @@ class Peer(object):
         welcome = yield
         assert welcome.type == PACKET_WELCOME # TODO: error handling
         sock.peer_id = welcome.peer_id
-        self.peers.add(sock)
+        self.peers[sock.peer_id] = sock
 
         # queue up updates for peer according to its vclock
         msgs = self.updates_for(welcome.vclock)
@@ -255,7 +290,8 @@ class Peer(object):
             self.handle_message(packet.message, recvd_from=sock)
 
         # got bye
-        self.peers.remove(sock)
+        assert sock is self.peers[sock.peer_id]
+        del self.peers[sock.peer_id]
         sock.shutdown(socket.SHUT_RDWR)
         sock.close()
 
@@ -276,7 +312,7 @@ class Peer(object):
         self.state.message_store.add(message)
         # ... and send it on to all our neighboring peers (except the one that
         # sent it to us)
-        dests = (x for x in self.peers if x is not recvd_from)
+        dests = (x for x in self.peers.values() if x is not recvd_from)
         self.send_one(dests, PacketMessage(message))
 
     def handle_write(self, sock):
@@ -286,6 +322,9 @@ class Peer(object):
         def sender(chunk):
             return sock.send(chunk)
         self.queue.send(sock, sender)
+        # we should wait for write events on `sock` if and only if it has more
+        # data queued for it.
+        sock.mark_writable(self.queue.has_queued_data(sock))
 
     def shutdown(self): pass
 

@@ -3,6 +3,7 @@ import asyncore
 import bisect
 import errno
 import json
+import os, os.path
 import socket
 import struct
 import types
@@ -427,3 +428,57 @@ class MessageDispatcher(asyncore.dispatcher):
             self.handle_message(Message.from_json(json.loads(chunk)))
             self.reading_header = True
             self.expect(Message.HEADER_LEN)
+
+
+# Configuration helpers
+def _find_xdg_info():
+    home = os.getenv('HOME')
+
+    cfg_home = os.getenv('XDG_CONFIG_HOME')
+    if cfg_home is None and home is not None:
+        cfg_home = os.path.join(home, '.config')
+
+    cfg_dirs = []
+    if cfg_home is not None: cfg_dirs.append(cfg_home)
+    cfg_dirs.extend(os.getenv('XDG_CONFIG_DIRS', '/etc/xdg').split(':'))
+
+    data_home = os.getenv('XDG_DATA_HOME')
+    if data_home is None and home is not None:
+        data_home = os.path.join(home, '.local/share')
+
+    data_dirs = []
+    if data_home is not None: data_dirs.append(data_home)
+    data_dirs.extend(
+        os.getenv('XDG_DATA_DIRS', '/usr/local/share/:/usr/share/')
+        .split(':'))
+
+    return {'cfg_home': cfg_home,
+            'cfg_dirs': cfg_dirs,
+            'data_home': data_home,
+            'data_dirs': data_dirs}
+
+def find_msgbox_config_file():
+    # returns path, found
+    # path is the path to the config file
+    # found is True if the file exists already, False if it should be created
+    xdg = _find_xdg_info()
+    for d in xdg['cfg_dirs']:
+        path = os.path.join(d, 'msgbox')
+        if os.path.exists(os.path.join(d, 'msgbox')):
+            return path, True
+    # TODO: handle xdg['cfg_home'] being None
+    return os.path.join(xdg['cfg_home'], 'msgbox'), False
+
+def find_msgbox_state_file(config):
+    # if explicitly given in config, just give that back
+    if 'state_file' in config:
+        path = config['state_file']
+        return path, os.path.exists(path)
+    # otherwise, fall back on XDG
+    xdg = _find_xdg_info()
+    for d in xdg['data_dirs']:
+        path = os.path.join(d, 'msgbox')
+        if os.path.exists(path):
+            return path, True
+    # TODO: handle xdg['data_home'] being None
+    return os.path.join(xdg['data_home'], 'msgbox'), False

@@ -394,13 +394,22 @@ def parse_config(options):
         if not cond: abort(msg + ", quitting")
 
     cfg_file = options.config_file
-    test(cfg_file, "No config file specified")
+    if cfg_file is None:
+        cfg_file, found = find_msgbox_config_file()
+        # TODO: indicate where one was expected or could be put
+        test(found, "No config file found")
 
     with open(cfg_file, 'r') as f:
         cfg = json.load(f)
 
+    state_file, found = find_msgbox_state_file(cfg)
+    # TODO: create fresh state automatically
+    test(found, "No state file found")
+    with open(state_file) as f:
+        state = json.load(f)
+
     # TODO: config verification
-    return cfg
+    return cfg, state
 
 
 # The main program
@@ -408,17 +417,14 @@ def main(args):
     parser = Options()
     (options, args) = parser.parse_args(args)
     assert not args        # we don't take positional args. TODO: error message.
-    cfg = parse_config(options)
+    cfg, state = parse_config(options)
 
     # Parse the config into arguments for Peer() constructor.
-    def parse_state(filename):
-        with open(filename) as f:
-            return State.from_json(json.load(f))
     ctors = {'peer_id': lambda x: x,
-             'state': parse_state,
              'listen_address': Address.from_json,
              'remote_addresses': lambda x: map(Address.from_json, x)}
     kwargs = {name: ctor(cfg[name]) for name, ctor in ctors.iteritems()}
+    kwargs['state'] = State.from_json(state)
 
     peer = Peer(**kwargs)
 

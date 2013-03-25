@@ -1,6 +1,6 @@
 {
   "peer_id": "bob",
-  "state": "example/bob-state",
+  "state_file": "example/bob-state",
   "listen_address": "unix://example/bob-listen",
   "remote_addresses": [ {
       "type": "tcp",

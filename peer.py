@@ -3,6 +3,7 @@ import asyncore
 import errno
 import json
 import optparse
+import signal
 import socket
 import sys
 import time
@@ -26,6 +27,10 @@ LOG_LEVELS = 'debug info warn error'.split()
 LOG_LEVEL_NAMES = {i: n for i,n in enumerate(LOG_LEVELS)}
 def log_level_name(i): return LOG_LEVEL_NAMES[i]
 globals().update({'LOG_' + l.upper(): i for i,l in LOG_LEVEL_NAMES.iteritems()})
+
+# exceptions
+# error thrown in a reader coro to indicate connection has closed.
+class ClosedError(Exception): pass
 
 
 # Handles the socket we listen on incoming connections for
@@ -66,13 +71,15 @@ class ConnHandler(PacketDispatcher):
         self.parent.handle_write(self)
 
     def handle_close(self):
+        # FIXME: could get called if connection attempt fails, before we have a
+        # reader_coro.
         assert self.reader_coro is not None
         try: self.reader_coro.throw(ClosedError())
         except StopIteration: pass
         else: assert False      # should have raised StopIteration
 
-# error thrown in a reader coro to indicate connection has closed.
-class ClosedError(Exception): pass
+    def handle_error(self):
+        return PacketDispatcher.handle_error(self)
 
 class IncomingHandler(ConnHandler):
     def __init__(self, parent, sock):
@@ -83,9 +90,14 @@ class IncomingHandler(ConnHandler):
 class OutgoingHandler(ConnHandler):
     def __init__(self, parent):
         ConnHandler.__init__(self, parent)
+        # need to be writable to notice that we have connected
+        self.mark_writable()
 
     def handle_connect(self):
-        # start up a reader coro & hook us up to the write-handler
+        # okay, we've connected, so we go back to not caring whether we're
+        # writable. (if messages get queued to us, this will change.)
+        self.mark_writable(False)
+        # start up a reader coro
         self.reader_coro = self.parent.outgoing_coro(self)
         self.reader_coro.next()
 
@@ -150,12 +162,15 @@ class Peer(object):
         while True: self.loop()
 
     def loop(self):
+        # self.debug('looping')
         assert self.socket_map
         timeout = self.check_timers()
         asyncore.loop(count=1, map = self.socket_map, timeout=timeout)
 
     def shutdown(self):
-        raise NotImplementedError()     # FIXME
+        # Shutdown is surprisingly simple: we do nothing. Our open sockets will
+        # be closed automatically when the process exits.
+        return
 
     # ----- Timers ----
     def add_timer(self, delay, callback):
@@ -383,7 +398,27 @@ def main(args):
     kwargs = {name: ctor(cfg[name]) for name, ctor in ctors.iteritems()}
 
     peer = Peer(**kwargs)
+
+    # set up signal handlers to shut down the peer and exit main loop
+    quitting = [False]
+    def quit_handler(signo, frame):
+        # TODO?: ideally, should use an atomic-test-and-set on `quitting`, to
+        # make our signal handler re-entrant.
+        if not quitting[0]:
+            # first signal. try to die gracefully.
+            quitting[0] = True
+            peer.shutdown()
+            sys.exit(0)
+        else:
+            # second signal. die NOW.
+            sys.exit(1)
+
+    signal.signal(signal.SIGTERM, quit_handler)
+    signal.signal(signal.SIGINT, quit_handler)
+
+    # run main loop
     peer.run()
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try: main(sys.argv[1:])
+    except KeyboardInterrupt: sys.exit(1)

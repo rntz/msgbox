@@ -170,13 +170,13 @@ class Address(JsonRecord):
         assert False
 
     def socket_address(self):
-        if self.type == ADDRESS_TCP: return (self.address, self.port)
+        if self.type == ADDRESS_TCP: return (self.host, self.port)
         elif self.type == ADDRESS_UNIX: return self.path
         assert False
 
     def __str__(self):
         if self.type == ADDRESS_TCP:
-            return 'tcp://%s:%s' % (self.address, self.port)
+            return 'tcp://%s:%s' % (self.host, self.port)
         elif self.type == ADDRESS_UNIX:
             return 'unix://%s' % self.path
         assert False

@@ -15,11 +15,8 @@ def def_enum(name, typestring):
 # Node types - the types of nodes that can connect to us / we can connect to.
 def_enum('node', 'peer sender')
 
-# Packet types - the types of packets that we can receive.
-#
-# Note: "packet" does NOT mean a TCP packet. we're using the term for our own
-# purposes. I wish I knew a better one.
-def_enum('packet', 'hello welcome uptodate event gen_event')
+# Message types - the types of messages that we can receive.
+def_enum('message', 'hello welcome uptodate event gen_event')
 
 # Address types
 def_enum('address', 'tcp unix')
@@ -188,21 +185,21 @@ def AddressUnix(path):
     return Address(type=ADDRESS_UNIX, path=path)
 
 
-# A packet
-class Packet(JsonRecord):
-    # wire format for packets, using the struct module's format string. this
+# A message
+class Message(JsonRecord):
+    # wire format for messages, using the struct module's format string. this
     # means "big-endian 4-byte unsigned integer".
     HEADER_FMT = '>I'
     HEADER_LEN = struct.calcsize(HEADER_FMT)
     assert HEADER_LEN == 4
 
     def __init__(self, **kwargs):
-        super(Packet, self).__init__(**kwargs)
-        assert self.type in PACKET_TYPES
+        super(Message, self).__init__(**kwargs)
+        assert self.type in MESSAGE_TYPES
 
     def serialize(self):
         data = json.dumps(self.to_json())
-        header = struct.pack(Packet.HEADER_FMT, len(data))
+        header = struct.pack(Message.HEADER_FMT, len(data))
         return header + data
 
     def post_from_json(self):
@@ -213,29 +210,29 @@ class Packet(JsonRecord):
 
     @staticmethod
     def parse_header(header):
-        (packet_len,) = struct.unpack(Packet.HEADER_FMT, header)
-        return packet_len
+        (message_len,) = struct.unpack(Message.HEADER_FMT, header)
+        return message_len
 
-def PacketEvent(event):
-    return Packet(type=PACKET_EVENT, event=event)
+def MessageEvent(event):
+    return Message(type=MESSAGE_EVENT, event=event)
 
-def PacketGenEvent(source, data):
-    return Packet(type=PACKET_GEN_EVENT, source=source, data=data)
+def MessageGenEvent(source, data):
+    return Message(type=MESSAGE_GEN_EVENT, source=source, data=data)
 
-def PacketHelloPeer(peer_id, vclock):
-    return Packet(type=PACKET_HELLO,
+def MessageHelloPeer(peer_id, vclock):
+    return Message(type=MESSAGE_HELLO,
                   node_type=NODE_PEER,
                   peer_id=peer_id,
                   vclock=vclock.copy())
 
-def PacketHelloSender():
-    return Packet(type=PACKET_INIT, node_type=NODE_SENDER)
+def MessageHelloSender():
+    return Message(type=MESSAGE_INIT, node_type=NODE_SENDER)
 
-def PacketWelcome(peer_id, vclock):
-    return Packet(type=PACKET_WELCOME, peer_id=peer_id, vclock=vclock.copy())
+def MessageWelcome(peer_id, vclock):
+    return Message(type=MESSAGE_WELCOME, peer_id=peer_id, vclock=vclock.copy())
 
-def PacketUptodate():
-    return Packet(type=PACKET_UPTODATE)
+def MessageUptodate():
+    return Message(type=MESSAGE_UPTODATE)
 
 
 # An event, consisting of a source identifier, a timestamp, and a JSON payload.
@@ -353,15 +350,15 @@ class EventStore(Jsonable):
         return json
 
 
-# Handles splitting things into packets
-class PacketDispatcher(asyncore.dispatcher):
+# Handles splitting things into messages
+class MessageDispatcher(asyncore.dispatcher):
     def __init__(self, **kwargs):
         asyncore.dispatcher.__init__(self, **kwargs)
         self.recvd = []
-        # True if we're reading a packet's length header, False if we're reading
+        # True if we're reading a message's length header, False if we're reading
         # its body
         self.reading_header = True
-        self.expecting = Packet.HEADER_LEN
+        self.expecting = Message.HEADER_LEN
 
     def expect(self, n_bytes):
         assert self.expecting == 0
@@ -380,7 +377,7 @@ class PacketDispatcher(asyncore.dispatcher):
             return ''
 
     # subclass must implement
-    def handle_packet(self, packet): raise NotImplementedError()
+    def handle_message(self, message): raise NotImplementedError()
 
     def handle_read(self):
         # TODO: is self.connected the right thing to loop on?
@@ -403,10 +400,10 @@ class PacketDispatcher(asyncore.dispatcher):
 
     def handle_chunk(self, chunk):
         if self.reading_header:
-            packet_len = Packet.parse_header(chunk)
+            message_len = Message.parse_header(chunk)
             self.reading_header = False
-            self.expect(packet_len)
+            self.expect(message_len)
         else:
-            self.handle_packet(Packet.from_json(json.loads(chunk)))
+            self.handle_message(Message.from_json(json.loads(chunk)))
             self.reading_header = True
-            self.expect(Packet.HEADER_LEN)
+            self.expect(Message.HEADER_LEN)

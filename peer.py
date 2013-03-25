@@ -53,9 +53,9 @@ class ListenHandler(asyncore.dispatcher):
 
 
 # Handles the IO on a connection to another node
-class ConnHandler(PacketDispatcher):
+class ConnHandler(MessageDispatcher):
     def __init__(self, parent, **kwargs):
-        PacketDispatcher.__init__(self, map=parent.socket_map, **kwargs)
+        MessageDispatcher.__init__(self, map=parent.socket_map, **kwargs)
         self.parent = parent
         self.reader_coro = None
         self.writable_ = False
@@ -64,8 +64,8 @@ class ConnHandler(PacketDispatcher):
     def writable(self): return self.writable_
     def mark_writable(self, writable=True): self.writable_ = writable
 
-    def handle_packet(self, packet):
-        self.reader_coro.send(packet)
+    def handle_message(self, message):
+        self.reader_coro.send(message)
 
     def handle_write(self):
         self.parent.handle_write(self)
@@ -213,16 +213,16 @@ class Peer(object):
         else:
             self.info('finished starting connection attempts for remotes')
 
-    # ----- Sending packets -----
-    # Schedules packets for sending to a list of sockets.
-    def send_many(self, socks, packets):
+    # ----- Sending messages -----
+    # Schedules messages for sending to a list of sockets.
+    def send_many(self, socks, messages):
         newly_active = self.queue.enqueue(socks,
-                                          [p.serialize() for p in packets])
+                                          [m.serialize() for m in messages])
         for sock in newly_active:
             self.try_sending_to(sock)
 
-    def send_one(self, socks, packet):
-        return self.send_many(socks, [packet])
+    def send_one(self, socks, message):
+        return self.send_many(socks, [message])
 
     # Sends as much data to a sock as it will accept without blocking
     def try_sending_to(self, sock):
@@ -246,8 +246,7 @@ class Peer(object):
             self.debug('starting incoming coro for %s', sock)
 
             hello = yield
-            # TODO: couldn't the first packet (or ANY packet) be a BYE?
-            assert hello.type == PACKET_HELLO    # TODO: error handling
+            assert hello.type == MESSAGE_HELLO    # TODO: error handling
             assert hello.node_type in NODE_TYPES # TODO: error handling
             node_type = hello.node_type
 
@@ -257,25 +256,25 @@ class Peer(object):
 
                 # send welcome response and updates for peer
                 events = self.updates_for(hello.vclock)
-                packets = ([PacketWelcome(self.peer_id, self.state.vclock)]
-                           + [PacketEvent(e) for e in events]
-                           + [PacketUptodate()])
-                self.send_many([sock], packets)
+                messages = ([MessageWelcome(self.peer_id, self.state.vclock)]
+                            + [MessageEvent(e) for e in events]
+                            + [MessageUptodate()])
+                self.send_many([sock], messages)
 
                 # now, accept events from our peer
                 while True:
-                    packet = yield
+                    message = yield
                     # TODO: handle bad message types
-                    assert packet.type == PACKET_EVENT
-                    self.handle_event(packet.event, recvd_from=sock)
+                    assert message.type == MESSAGE_EVENT
+                    self.handle_event(message.event, recvd_from=sock)
 
             elif node_type == NODE_SENDER:
                 # just read events from them.
                 while True:
-                    packet = yield
+                    message = yield
                     # TODO: handle bad event types
-                    assert packet.type == PACKET_EVENT
-                    self.handle_event(packet.event, recvd_from=sock)
+                    assert message.type == MESSAGE_EVENT
+                    self.handle_event(message.event, recvd_from=sock)
 
             else:
                 assert False        # unreachable case
@@ -297,32 +296,32 @@ class Peer(object):
             self.debug('starting outgoing coro for %s', sock)
 
             # send a hello message
-            self.send_one([sock], PacketHelloPeer(self.peer_id,
-                                                  self.state.vclock))
+            self.send_one([sock], MessageHelloPeer(self.peer_id,
+                                                   self.state.vclock))
 
             # wait for a welcome
             welcome = yield
-            assert welcome.type == PACKET_WELCOME # TODO: error handling
+            assert welcome.type == MESSAGE_WELCOME # TODO: error handling
             self.add_peer(sock, welcome.peer_id)
 
             # queue up updates for peer according to its vclock
             events = self.updates_for(welcome.vclock)
-            self.send_many([sock], (PacketEvent(e) for e in events))
+            self.send_many([sock], (MessageEvent(e) for e in events))
 
             # accept events from peer until we're up-to-date
             while True:
-                packet = yield
-                if packet.type == PACKET_UPTODATE:
+                message = yield
+                if message.type == MESSAGE_UPTODATE:
                     # TODO: remove debug print
                     self.debug('up-to-date on outgoing socket')
-                    # We don't actually treat the uptodate packet specially. If
+                    # We don't actually treat the uptodate message specially. If
                     # we were smart, we might wait to connect to the next remote
-                    # until we got this packet. but this isn't strictly
+                    # until we got this message. but this isn't strictly
                     # necessary, so for now we don't do it.
                     continue
                 # TODO: handle bad message types
-                assert packet.type == PACKET_EVENT
-                self.handle_event(packet.event, recvd_from=sock)
+                assert message.type == MESSAGE_EVENT
+                self.handle_event(message.event, recvd_from=sock)
 
         except ClosedError:
             # TODO: better log formatting for sockets
@@ -364,7 +363,7 @@ class Peer(object):
         # ... and send it on to all our neighboring peers (except the one that
         # sent it to us)
         dests = (x for x in self.peers.values() if x is not recvd_from)
-        self.send_one(dests, PacketEvent(event))
+        self.send_one(dests, MessageEvent(event))
 
 
 # Startup stuff

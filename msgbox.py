@@ -171,6 +171,12 @@ class Address(JsonRecord):
         elif self.type == ADDRESS_UNIX: return self.path
         assert False
 
+    @classmethod
+    def from_json(klass, json):
+        if isinstance(json, (str, unicode)):
+            return klass.from_str(json)
+        return super(Address, klass).from_json(json)
+
     @staticmethod
     def from_str(string):
         proto, addr = string.split('://', 1)

@@ -1,10 +1,6 @@
 {
   "peer_id": "alice",
   "state": "example/alice-state",
-  "listen_address": {
-    "type": "tcp",
-    "host": "localhost",
-    "port": 23279
-  },
+  "listen_address": "tcp://localhost:23279",
   "remote_addresses": []
 }

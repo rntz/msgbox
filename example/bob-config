@@ -1,10 +1,7 @@
 {
   "peer_id": "bob",
   "state": "example/bob-state",
-  "listen_address": {
-    "type": "unix",
-    "path": "example/bob-listen"
-  },
+  "listen_address": "unix://example/bob-listen",
   "remote_addresses": [ {
       "type": "tcp",
       "host": "localhost",

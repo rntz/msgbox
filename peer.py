@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 import asyncore
-import bisect
 import errno
 import json
 import optparse
@@ -39,6 +38,7 @@ class ListenHandler(asyncore.dispatcher):
         self.parent.handle_incoming(sock, addr)
 
     def handle_close(self):
+        print 'FUX: closing listener: %s' % self
         raise NotImplementedError()     # FIXME
 
 
@@ -61,7 +61,14 @@ class ConnHandler(PacketDispatcher):
         self.parent.handle_write(self)
 
     def handle_close(self):
-        raise NotImplementedError()  # FIXME
+        print '---------- FUX: closing: %s' % self
+        if self.reader_coro is not None:
+            try: self.reader_coro.throw(ClosedError())
+            except StopIteration: pass
+            else: assert False      # should have raised StopIteration
+
+# error thrown in a reader coro to indicate connection has closed.
+class ClosedError(Exception): pass
 
 # TODO: we should be marking these unwritable when we have no messages for them,
 # otherwise we'll spin the CPU by waking up all the time in the select() loop.
@@ -143,7 +150,8 @@ class Peer(object):
         print 'listening on %s' % self.listen_address
 
         # kickstart the remote-connection process
-        self.schedule_remote_connect()
+        if self.remote_addresses:
+            self.try_remote_connect()
 
         # wait for events
         while True:
@@ -154,7 +162,7 @@ class Peer(object):
 
     def loop(self):
         # TODO: remove debug print
-        print 'loop: %s' % self.socket_map
+        print 'loop'
 
         assert self.socket_map
         now = time.time()
@@ -178,12 +186,9 @@ class Peer(object):
         print 'connecting to remote at %s' % address
         sock = OutgoingHandler(self)
         sock.create_socket(address.socket_address_family(), socket.SOCK_STREAM)
+        # TODO: error handling (eg. ECONNREFUSED)
         sock.connect(address.socket_address())
 
-        self.schedule_remote_connect()
-
-    def schedule_remote_connect(self):
-        # schedule a connection to the next remote
         if self.remote_addresses:
             self.add_timer(REMOTE_CONNECT_DELAY_S, self.try_remote_connect)
         else:
@@ -200,6 +205,18 @@ class Peer(object):
     def send_one(self, socks, packet):
         return self.send_many(socks, [packet])
 
+    def add_peer(self, sock, peer_id):
+        assert peer_id not in self.peers
+        assert getattr(sock, 'peer_id', None) is None
+        sock.peer_id = peer_id
+        self.peers[peer_id] = sock
+
+    def disconnect(self, sock):
+        if hasattr(sock, 'peer_id'):
+            assert sock is self.peers[sock.peer_id]
+            del self.peers[sock.peer_id]
+        sock.close()
+
     # handling incoming connections
     def handle_incoming(self, sock, addr):
         # TODO: remove debug print
@@ -207,93 +224,93 @@ class Peer(object):
         IncomingHandler(self, sock=sock)
 
     def incoming_coro(self, sock):
-        # TODO: remove debug print
-        print 'starting incoming coro for %s' % sock
-
         # TODO: handle unannounced shutdowns. probably need a try/catch block.
-        hello = yield
-        # TODO: couldn't the first packet (or ANY packet) be a BYE?
-        assert hello.type == PACKET_HELLO    # TODO: error handling
-        assert hello.node_type in NODE_TYPES # TODO: error handling
-        node_type = hello.node_type
+        try:
+            # TODO: remove debug print
+            print 'starting incoming coro for %s' % sock
 
-        # this code could be so much cleaner if `yield from` was available.
-        if node_type == NODE_PEER:
-            peer_id = sock.peer_id = hello.peer_id
-            assert peer_id not in self.peers
-            self.peers[peer_id] = sock
+            hello = yield
+            # TODO: couldn't the first packet (or ANY packet) be a BYE?
+            assert hello.type == PACKET_HELLO    # TODO: error handling
+            assert hello.node_type in NODE_TYPES # TODO: error handling
+            node_type = hello.node_type
 
-            # send welcome response and updates for peer
-            msgs = self.updates_for(hello.vclock)
-            packets = ([PacketWelcome(self.peer_id, self.state.vclock)]
-                       + [PacketMessage(msg) for msg in msgs]
-                       + [PacketUptodate()])
-            self.send_many([sock], packets)
+            # this code could be so much cleaner if `yield from` was available.
+            if node_type == NODE_PEER:
+                self.add_peer(sock, hello.peer_id)
 
-            # now, accept messages from our peer
-            while True:
-                packet = yield
-                if packet.type == PACKET_BYE: break
-                # TODO: handle bad message types
-                assert packet.type == PACKET_MESSAGE
-                self.handle_message(packet.message, recvd_from=sock)
+                # send welcome response and updates for peer
+                msgs = self.updates_for(hello.vclock)
+                packets = ([PacketWelcome(self.peer_id, self.state.vclock)]
+                           + [PacketMessage(msg) for msg in msgs]
+                           + [PacketUptodate()])
+                self.send_many([sock], packets)
 
-            # got a bye from a peer
-            assert sock is self.peers[sock.peer_id]
-            del self.peers[sock.peer_id]
+                # now, accept messages from our peer
+                while True:
+                    packet = yield
+                    # TODO: handle bad message types
+                    assert packet.type == PACKET_MESSAGE
+                    self.handle_message(packet.message, recvd_from=sock)
 
-        elif node_type == NODE_SENDER:
-            # just read messages from them.
-            while True:
-                packet = yield
-                if packet.type == PACKET_BYE: break
-                # TODO: handle bad message types
-                assert packet.type == PACKET_MESSAGE
-                self.handle_message(packet.message, recvd_from=sock)
+            elif node_type == NODE_SENDER:
+                # just read messages from them.
+                while True:
+                    packet = yield
+                    # TODO: handle bad message types
+                    assert packet.type == PACKET_MESSAGE
+                    self.handle_message(packet.message, recvd_from=sock)
 
-        else:
-            assert False        # unreachable case
+            else:
+                assert False        # unreachable case
+            assert False        # unreachable
 
-        # we got a bye.
-        sock.shutdown(socket.SHUT_RDWR)
-        sock.close()
+        except ClosedError:
+            # TODO: logging
+            # TODO: remove debug print
+            print "---------- incoming was closed"
+            self.disconnect(sock)
 
     def outgoing_coro(self, sock):
-        # TODO: remove debug print
-        print 'starting outgoing coro for %s' % sock
+        try:
+            # TODO: remove debug print
+            print 'starting outgoing coro for %s' % sock
 
-        # send a hello message
-        self.send_one([sock], PacketHelloPeer(self.peer_id, self.state.vclock))
+            # send a hello message
+            self.send_one([sock], PacketHelloPeer(self.peer_id,
+                                                  self.state.vclock))
 
-        # wait for a welcome
-        welcome = yield
-        assert welcome.type == PACKET_WELCOME # TODO: error handling
-        sock.peer_id = welcome.peer_id
-        self.peers[sock.peer_id] = sock
+            # wait for a welcome
+            welcome = yield
+            assert welcome.type == PACKET_WELCOME # TODO: error handling
+            self.add_peer(sock, welcome.peer_id)
 
-        # queue up updates for peer according to its vclock
-        msgs = self.updates_for(welcome.vclock)
-        self.send_many([sock], (PacketMessage(msg) for msg in msgs))
+            # queue up updates for peer according to its vclock
+            msgs = self.updates_for(welcome.vclock)
+            self.send_many([sock], (PacketMessage(msg) for msg in msgs))
 
-        # accept messages from peer until we're up-to-date
-        while True:
-            packet = yield
-            if packet.type == PACKET_BYE: break
-            if packet.type == PACKET_UPTODATE:
-                # We don't actually treat the uptodate packet specially. If we
-                # were smart, we might wait to connect to the next remote until
-                # we got this packet. but this isn't strictly necessary, so for
-                # now we don't do it.
-                continue
-            # TODO: handle bad message types
-            assert packet.type == PACKET_MESSAGE
-            self.handle_message(packet.message, recvd_from=sock)
+            # accept messages from peer until we're up-to-date
+            while True:
+                packet = yield
+                if packet.type == PACKET_UPTODATE:
+                    # TODO: remove debug print
+                    print '---------- UPTODATE'
+                    # We don't actually treat the uptodate packet specially. If
+                    # we were smart, we might wait to connect to the next remote
+                    # until we got this packet. but this isn't strictly
+                    # necessary, so for now we don't do it.
+                    continue
+                # TODO: handle bad message types
+                assert packet.type == PACKET_MESSAGE
+                self.handle_message(packet.message, recvd_from=sock)
 
-        # got bye
-        assert sock is self.peers[sock.peer_id]
-        del self.peers[sock.peer_id]
-        sock.shutdown(socket.SHUT_RDWR)
-        sock.close()
+            assert False        # unreachable
+
+        except ClosedError:
+            # TODO: logging
+            # TODO: remove debug print
+            print "---------- outgoing was closed"
+            self.disconnect(sock)
 
     def updates_for(self, vclock):
         msgdict = self.state.message_store.messages_after_vclock(vclock)

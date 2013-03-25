@@ -1,5 +1,6 @@
 from collections import defaultdict, deque, namedtuple
 import asyncore
+import bisect
 import errno
 import json
 import socket
@@ -18,10 +19,7 @@ def_enum('node', 'peer sender')
 #
 # Note: "packet" does NOT mean a TCP packet. we're using the term for our own
 # purposes. I wish I knew a better one.
-#
-# TODO: do we need a "bye" message, given that we can call shutdown() on
-# sockets?
-def_enum('packet', 'hello welcome uptodate bye message')
+def_enum('packet', 'hello welcome uptodate message')
 
 # Address types
 def_enum('address', 'tcp unix')
@@ -60,6 +58,12 @@ class MultiQueue(object):
             self.queues[dest].extend(chunks)
         return empty_dests
 
+    # removes each dest in dests from the queue
+    def remove(self, dests):
+        for d in dests:
+            if d in self.queues:
+                del self.queues[d]
+
     # Tries to send as much data as possible to a given destination. `sender`
     # should be a function that takes a string and returns how much of the
     # string was successfully sent to the destination. send() stops sending once
@@ -95,7 +99,7 @@ class Jsonable(object):
     def to_json(self):
         raise NotImplementedError()
 
-    def __str__(self):
+    def __repr__(self):
         return '%s.from_json(%s)' % (
             type(self).__name__,
             self.to_json())
@@ -203,9 +207,6 @@ def PacketWelcome(peer_id, vclock):
 def PacketUptodate():
     return Packet(type=PACKET_UPTODATE)
 
-def PacketBye():
-    return Packet(type=PACKET_BYE)
-
 
 # A message, consisting of a source identifier, a timestamp, and a JSON payload.
 class Message(Jsonable):
@@ -298,8 +299,10 @@ class MessageStore(Jsonable):
             if source not in vclock:
                 idx = 0
             else:
-                idx = bisect.bisect(msgs, vclock.time_for(source))
-            msgdict[source] = msgs[idx:]
+                keys = [m.timestamp for m in msgs]
+                idx = bisect.bisect_right(keys, vclock.time_for(source))
+            if idx < len(msgs):
+                msgdict[source] = msgs[idx:]
         return msgdict
 
     @staticmethod

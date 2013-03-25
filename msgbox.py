@@ -171,12 +171,26 @@ class Address(JsonRecord):
         elif self.type == ADDRESS_UNIX: return self.path
         assert False
 
+    @staticmethod
+    def from_str(string):
+        proto, addr = string.split('://', 1)
+        assert proto in ADDRESS_TYPES
+        if proto == 'tcp':
+            host, port = addr.split(':')
+            return AddressTCP(host, int(port))
+        elif proto == 'unix':
+            return AddressUnix(addr)
+        assert False            # unreachable
+
     def __str__(self):
         if self.type == ADDRESS_TCP:
             return 'tcp://%s:%s' % (self.host, self.port)
         elif self.type == ADDRESS_UNIX:
             return 'unix://%s' % self.path
-        assert False
+        assert False            # unreachable unless self.type is corrupt
+
+    def __repr__(self):
+        return 'Address.from_str(%r)' % str(self)
 
 def AddressTCP(host, port):
     return Address(type=ADDRESS_TCP, host=host, port=port)

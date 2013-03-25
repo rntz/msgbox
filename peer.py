@@ -354,12 +354,14 @@ class Peer(object):
     def handle_write(self, sock):
         self.try_sending_to(sock)
 
-    def handle_event(self, event, recvd_from=None):
+    def handle_event(self, event, recvd_from):
         # TODO: remove debug print
         self.debug('handling event: %s', event)
         # if we haven't already seen the event...
         if self.state.vclock.already_happened(event.source, event.timestamp):
             return
+        # we should never receive events whose source is _us_ from another peer.
+        assert event.source != self.peer_id or recvd_from is None
         # ... then add it to the store, update our vclock, ...
         # TODO: schedule state-save?
         self.state.vclock.update(event.source, event.timestamp)
@@ -370,7 +372,10 @@ class Peer(object):
         self.send_one(dests, MessageEvent(event))
 
     def gen_event(self, data):
-        raise NotImplementedError()     # FIXME
+        source = self.peer_id
+        timestamp = 1 + self.state.vclock.time_for(source)
+        event = Event(source, timestamp, data)
+        self.handle_event(event, recvd_from=None)
 
 
 # Startup stuff

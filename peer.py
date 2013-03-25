@@ -290,7 +290,6 @@ class Peer(object):
     def handle_failed_connect(self, sock, errnum, errmsg):
         # TODO: useful printing of sockets in error messages
         self.warn('outgoing connection on %s failed: %s', sock, errmsg)
-        raise NotImplementedError()     # FIXME
 
     def outgoing_coro(self, sock):
         try:
@@ -324,8 +323,6 @@ class Peer(object):
                 # TODO: handle bad message types
                 assert packet.type == PACKET_MESSAGE
                 self.handle_message(packet.message, recvd_from=sock)
-
-            assert False        # unreachable
 
         except ClosedError:
             # TODO: better log formatting for sockets

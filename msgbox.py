@@ -216,8 +216,8 @@ class Message(JsonRecord):
 def MessageEvent(event):
     return Message(type=MESSAGE_EVENT, event=event)
 
-def MessageGenEvent(source, data):
-    return Message(type=MESSAGE_GEN_EVENT, source=source, data=data)
+def MessageGenEvent(data):
+    return Message(type=MESSAGE_GEN_EVENT, data=data)
 
 def MessageHelloPeer(peer_id, vclock):
     return Message(type=MESSAGE_HELLO,

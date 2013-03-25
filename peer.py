@@ -272,9 +272,13 @@ class Peer(object):
                 # just read events from them.
                 while True:
                     message = yield
-                    # TODO: handle bad event types
-                    assert message.type == MESSAGE_EVENT
-                    self.handle_event(message.event, recvd_from=sock)
+                    if message.type == MESSAGE_EVENT:
+                        self.handle_event(message.event, recvd_from=sock)
+                    elif message.type == MESSAGE_GEN_EVENT:
+                        self.gen_event(message.data)
+                    else:
+                        # TODO: handle bad event types
+                        assert False # bad message type
 
             else:
                 assert False        # unreachable case
@@ -364,6 +368,9 @@ class Peer(object):
         # sent it to us)
         dests = (x for x in self.peers.values() if x is not recvd_from)
         self.send_one(dests, MessageEvent(event))
+
+    def gen_event(self, data):
+        raise NotImplementedError()     # FIXME
 
 
 # Startup stuff

@@ -71,15 +71,10 @@ class ConnHandler(PacketDispatcher):
         self.parent.handle_write(self)
 
     def handle_close(self):
-        # FIXME: could get called if connection attempt fails, before we have a
-        # reader_coro.
         assert self.reader_coro is not None
         try: self.reader_coro.throw(ClosedError())
         except StopIteration: pass
         else: assert False      # should have raised StopIteration
-
-    def handle_error(self):
-        return PacketDispatcher.handle_error(self)
 
 class IncomingHandler(ConnHandler):
     def __init__(self, parent, sock):
@@ -100,6 +95,22 @@ class OutgoingHandler(ConnHandler):
         # start up a reader coro
         self.reader_coro = self.parent.outgoing_coro(self)
         self.reader_coro.next()
+
+    def handle_error(self):
+        if self.reader_coro:
+            ConnHandler.handle_error(self)
+        # we have no reader_coro; so we were still trying to connect
+        if self.reader_coro is None:
+            # we're trying to connect
+            (typ, value, tb) = sys.exc_info()
+            if issubclass(typ, socket.error):
+                # connection failed
+                self.close()
+                self.parent.handle_failed_connect(self, value[0], value[1])
+            else:
+                ConnHandler.handle_error(self)
+        else:
+            ConnHandler.handle_error(self)
 
 
 # The mutable state (as opposed to mostly-static configuration) of a peer node.
@@ -276,6 +287,11 @@ class Peer(object):
             self.disconnect(sock)
 
     # ----- Outgoing connections -----
+    def handle_failed_connect(self, sock, errnum, errmsg):
+        # TODO: useful printing of sockets in error messages
+        self.warn('outgoing connection on %s failed: %s', sock, errmsg)
+        raise NotImplementedError()     # FIXME
+
     def outgoing_coro(self, sock):
         try:
             # TODO: remove debug print

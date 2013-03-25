@@ -115,18 +115,18 @@ class OutgoingHandler(ConnHandler):
 
 # The mutable state (as opposed to mostly-static configuration) of a peer node.
 class State(Jsonable):
-    def __init__(self, vclock, message_store):
+    def __init__(self, vclock, event_store):
         self.vclock = vclock
-        self.message_store = message_store
+        self.event_store = event_store
 
     def to_json(self):
         return {'vclock': self.vclock.to_json(),
-                'messages': self.message_store.to_json()}
+                'events': self.event_store.to_json()}
 
     @staticmethod
     def from_json(json):
         return State(VClock.from_json(json['vclock']),
-                     MessageStore.from_json(json['messages']))
+                     EventStore.from_json(json['events']))
 
 
 # deals with IO and shit
@@ -256,26 +256,26 @@ class Peer(object):
                 self.add_peer(sock, hello.peer_id)
 
                 # send welcome response and updates for peer
-                msgs = self.updates_for(hello.vclock)
+                events = self.updates_for(hello.vclock)
                 packets = ([PacketWelcome(self.peer_id, self.state.vclock)]
-                           + [PacketMessage(msg) for msg in msgs]
+                           + [PacketEvent(e) for e in events]
                            + [PacketUptodate()])
                 self.send_many([sock], packets)
 
-                # now, accept messages from our peer
+                # now, accept events from our peer
                 while True:
                     packet = yield
                     # TODO: handle bad message types
-                    assert packet.type == PACKET_MESSAGE
-                    self.handle_message(packet.message, recvd_from=sock)
+                    assert packet.type == PACKET_EVENT
+                    self.handle_event(packet.event, recvd_from=sock)
 
             elif node_type == NODE_SENDER:
-                # just read messages from them.
+                # just read events from them.
                 while True:
                     packet = yield
-                    # TODO: handle bad message types
-                    assert packet.type == PACKET_MESSAGE
-                    self.handle_message(packet.message, recvd_from=sock)
+                    # TODO: handle bad event types
+                    assert packet.type == PACKET_EVENT
+                    self.handle_event(packet.event, recvd_from=sock)
 
             else:
                 assert False        # unreachable case
@@ -306,10 +306,10 @@ class Peer(object):
             self.add_peer(sock, welcome.peer_id)
 
             # queue up updates for peer according to its vclock
-            msgs = self.updates_for(welcome.vclock)
-            self.send_many([sock], (PacketMessage(msg) for msg in msgs))
+            events = self.updates_for(welcome.vclock)
+            self.send_many([sock], (PacketEvent(e) for e in events))
 
-            # accept messages from peer until we're up-to-date
+            # accept events from peer until we're up-to-date
             while True:
                 packet = yield
                 if packet.type == PACKET_UPTODATE:
@@ -321,8 +321,8 @@ class Peer(object):
                     # necessary, so for now we don't do it.
                     continue
                 # TODO: handle bad message types
-                assert packet.type == PACKET_MESSAGE
-                self.handle_message(packet.message, recvd_from=sock)
+                assert packet.type == PACKET_EVENT
+                self.handle_event(packet.event, recvd_from=sock)
 
         except ClosedError:
             # TODO: better log formatting for sockets
@@ -343,29 +343,28 @@ class Peer(object):
         sock.close()
 
     def updates_for(self, vclock):
-        msgdict = self.state.message_store.messages_after_vclock(vclock)
-        for src, msgs in msgdict.iteritems():
-            for m in msgs: yield m
+        evdict = self.state.event_store.events_after_vclock(vclock)
+        for src, events in evdict.iteritems():
+            for e in events: yield e
 
     # ----- Event handling -----
     def handle_write(self, sock):
         self.try_sending_to(sock)
 
-    def handle_message(self, message, recvd_from=None):
+    def handle_event(self, event, recvd_from=None):
         # TODO: remove debug print
-        self.debug('handling message: %s', message)
-        # if we haven't already seen the message...
-        if self.state.vclock.already_happened(message.source,
-                                              message.timestamp):
+        self.debug('handling event: %s', event)
+        # if we haven't already seen the event...
+        if self.state.vclock.already_happened(event.source, event.timestamp):
             return
         # ... then add it to the store, update our vclock, ...
         # TODO: schedule state-save?
-        self.state.vclock.update(message.source, message.timestamp)
-        self.state.message_store.add(message)
+        self.state.vclock.update(event.source, event.timestamp)
+        self.state.event_store.add(event)
         # ... and send it on to all our neighboring peers (except the one that
         # sent it to us)
         dests = (x for x in self.peers.values() if x is not recvd_from)
-        self.send_one(dests, PacketMessage(message))
+        self.send_one(dests, PacketEvent(event))
 
 
 # Startup stuff

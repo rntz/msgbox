@@ -19,7 +19,7 @@ def_enum('node', 'peer sender')
 #
 # Note: "packet" does NOT mean a TCP packet. we're using the term for our own
 # purposes. I wish I knew a better one.
-def_enum('packet', 'hello welcome uptodate message')
+def_enum('packet', 'hello welcome uptodate event gen_event')
 
 # Address types
 def_enum('address', 'tcp unix')
@@ -207,7 +207,7 @@ class Packet(JsonRecord):
 
     def post_from_json(self):
         for field, typ in [('vclock', VClock),
-                           ('message', Message)]:
+                           ('event', Event)]:
             if not hasattr(self, field): continue
             setattr(self, field, typ.from_json(getattr(self, field)))
 
@@ -216,8 +216,11 @@ class Packet(JsonRecord):
         (packet_len,) = struct.unpack(Packet.HEADER_FMT, header)
         return packet_len
 
-def PacketMessage(message):
-    return Packet(type=PACKET_MESSAGE, message=message)
+def PacketEvent(event):
+    return Packet(type=PACKET_EVENT, event=event)
+
+def PacketGenEvent(source, data):
+    return Packet(type=PACKET_GEN_EVENT, source=source, data=data)
 
 def PacketHelloPeer(peer_id, vclock):
     return Packet(type=PACKET_HELLO,
@@ -235,8 +238,8 @@ def PacketUptodate():
     return Packet(type=PACKET_UPTODATE)
 
 
-# A message, consisting of a source identifier, a timestamp, and a JSON payload.
-class Message(Jsonable):
+# An event, consisting of a source identifier, a timestamp, and a JSON payload.
+class Event(Jsonable):
     def __init__(self, source, timestamp, data):
         assert isinstance(timestamp, int)
         self.source = source
@@ -245,12 +248,12 @@ class Message(Jsonable):
 
     @staticmethod
     def from_json(json):
-        return Message(json['source'], json['timestamp'], json['data'])
+        return Event(json['source'], json['timestamp'], json['data'])
 
     def to_json(self):
         return {'source': to_json(self.source),
                 'timestamp': to_json(self.timestamp),
-                'data': to_json(self.data)}
+                'data': self.data}
 
 
 # A vector clock, sort of.
@@ -304,49 +307,49 @@ class VClock(Jsonable):
         return dict(self.times)
 
 
-# The message store
+# The event store
 #
-# Keeps track of messages received from each source, along with their
+# Keeps track of events received from each source, along with their
 # timestamps.
 #
 # TODO: garbage collection of some sort
-class MessageStore(Jsonable):
+class EventStore(Jsonable):
     def __init__(self):
-        self.msgs = {}
+        self.events = {}
 
-    def add(self, msg):
-        lst = self.msgs.setdefault(msg.source,[])
+    def add(self, event):
+        lst = self.events.setdefault(event.source,[])
         # check ordering constraint
-        assert (not lst) or msg.timestamp > lst[-1].timestamp
-        lst.append(msg)
+        assert (not lst) or event.timestamp > lst[-1].timestamp
+        lst.append(event)
 
-    def messages_after_vclock(self, vclock):
-        msgdict = {}
-        for source, msgs in self.msgs.iteritems():
+    def events_after_vclock(self, vclock):
+        evdict = {}
+        for source, events in self.events.iteritems():
             if source not in vclock:
                 idx = 0
             else:
-                keys = [m.timestamp for m in msgs]
+                keys = [e.timestamp for e in events]
                 idx = bisect.bisect_right(keys, vclock.time_for(source))
-            if idx < len(msgs):
-                msgdict[source] = msgs[idx:]
-        return msgdict
+            if idx < len(events):
+                evdict[source] = events[idx:]
+        return evdict
 
     @staticmethod
     def from_json(json):
-        store = MessageStore()
-        for source, msgs in json.iteritems():
-            msgs = store.msgs[source] = [Message(source, m[0], m[1])
-                                         for m in msgs]
-            # check message list is strictly sorted by timestamp
-            assert all((msgs[i].timestamp < msgs[i+1].timestamp
-                        for i in xrange(len(msgs)-1)))
+        store = EventStore()
+        for source, events in json.iteritems():
+            events = store.events[source] = [Event(source, e[0], e[1])
+                                             for e in events]
+            # check event list is strictly sorted by timestamp
+            assert all((events[i].timestamp < events[i+1].timestamp
+                        for i in xrange(len(events)-1)))
         return store
 
     def to_json(self):
         json = {}
-        for source, msgs in self.msgs.iteritems():
-            json[source] = [[m.timestamp, m.data] for m in msgs]
+        for source, events in self.events.iteritems():
+            json[source] = [[to_json(e.timestamp), e.data] for e in events]
         return json
 
 
@@ -371,11 +374,10 @@ class PacketDispatcher(asyncore.dispatcher):
     def recv(self, *args, **kwargs):
         try:
             return asyncore.dispatcher.recv(self, *args, **kwargs)
-        except socket.error as (errnum, msg):
-            if errnum in [errno.EAGAIN, errno.EWOULDBLOCK]:
-                return ''
-            else:
-                raise
+        except socket.error as (errnum, errmsg):
+            if errnum not in [errno.EAGAIN, errno.EWOULDBLOCK]: raise
+            # recv() would block, so we "received" nothing
+            return ''
 
     # subclass must implement
     def handle_packet(self, packet): raise NotImplementedError()

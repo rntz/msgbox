@@ -247,7 +247,7 @@ def MessageHelloPeer(peer_id, vclock):
                   vclock=vclock.copy())
 
 def MessageHelloSender():
-    return Message(type=MESSAGE_INIT, node_type=NODE_SENDER)
+    return Message(type=MESSAGE_HELLO, node_type=NODE_SENDER)
 
 def MessageWelcome(peer_id, vclock):
     return Message(type=MESSAGE_WELCOME, peer_id=peer_id, vclock=vclock.copy())

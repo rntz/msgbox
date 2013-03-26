@@ -13,8 +13,10 @@ def abort(msg):
 class Options(optparse.OptionParser):
     def __init__(self):
         optparse.OptionParser.__init__(self)
-        self.add_option('-a', '--address', dest='address', default=None)
-        self.add_option('-f', '--config', dest='config_file', default=None)
+        self.add_option('-r', '--remote', dest='address', default=None)
+        self.add_option('-c', '--config-file', dest='config_file', default=None)
+        self.add_option('-a', '--args', dest='from_args', action='store_true')
+        self.add_option('-f', '--field', dest='fields', action='append', nargs=3)
 
 def main(args):
     def test(cond, msg):
@@ -22,7 +24,9 @@ def main(args):
 
     parser = Options()
     (options, args) = parser.parse_args(args)
-    test(not args, "Unexpected positional arguments")
+    options.from_args = options.from_args or bool(options.fields)
+    if not options.from_args:
+        test(not args, "Unexpected positional arguments")
 
     address = options.address
     if address:
@@ -36,9 +40,23 @@ def main(args):
             cfg = json.load(f)
         address = Address.from_json(cfg['listen_address'])
 
-    # we read one JSON payload from stdin...
+    # we figure out what JSON to send...
+    if options.from_args:
+        # make a string-string dict from our arguments and explicitly-given
+        # fields
+        assert len(args) % 2 == 0 # TODO: error message
+        msgdata = dict(zip(args[::2], args[1::2]))
+        # add in explicit fields
+        type_ctors = {'int': int, 'string': str, 'float': float,
+                      'json': json.loads}
+        for typ, name, val in options.fields:
+            msgdata[name] = type_ctors[typ](val)
+    else:
+        # read it from stdin
+        msgdata = json.load(sys.stdin)
+
+    # ... set up the messages we'll send ...
     hello = MessageHelloSender()
-    msgdata = json.load(sys.stdin)
     message = MessageGenEvent(msgdata)
     data = hello.serialize() + message.serialize()
 

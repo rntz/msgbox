@@ -387,7 +387,7 @@ class Options(optparse.OptionParser):
     # TODO: usage info
     def __init__(self):
         optparse.OptionParser.__init__(self)
-        self.add_option('-f', '--config', dest='config_file', default=None)
+        self.add_option('-c', '--config-file', dest='config_file', default=None)
 
 def parse_config(options):
     def test(cond, msg):

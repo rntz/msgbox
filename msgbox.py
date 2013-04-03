@@ -443,6 +443,7 @@ class MessageDispatcher(asyncore.dispatcher):
 
 # Configuration helpers
 class Config(object):
+    # TODO: log-file config entry, with defaults from XDG
     def __init__(self, json):
         self.peer_id = json['peer']
         self.listen_address = Address.from_json(json['listen'])

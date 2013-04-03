@@ -144,6 +144,7 @@ class Peer(object):
 
         # initialize our state
         self.state_file_path = config.state_file_path
+        # TODO: handle state file not existing yet
         with open(self.state_file_path) as f:
             self.state = State.from_json(json.load(f))
 
@@ -248,7 +249,6 @@ class Peer(object):
         IncomingHandler(self, sock=sock)
 
     def incoming_coro(self, sock):
-        # TODO: handle unannounced shutdowns. probably need a try/catch block.
         try:
             # TODO: remove debug print
             self.debug('starting incoming coro for %s', sock)

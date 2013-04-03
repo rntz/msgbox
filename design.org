@@ -1,3 +1,25 @@
 * Event schema
 
-TODO
+All events are at toplevel objects/dicts.
+
+| KEY     | USAGE                                                                     |
+|---------+---------------------------------------------------------------------------|
+| app     | human-readable string naming the app generating the notification          |
+|         | eg. "twitsend.pl"                                                         |
+|---------+---------------------------------------------------------------------------|
+| source  | human-readable string naming the source generating the notification       |
+|         | eg. "twitter", "irc", "gmail"                                             |
+|---------+---------------------------------------------------------------------------|
+| title   | very short description of what notification is about (roughly <=40 chars) |
+|         | eg. "tweet from @arntzenius", "message in #cslounge from rntz"            |
+|---------+---------------------------------------------------------------------------|
+| summary | short description of content of notification (roughly <=140 chars)        |
+|         | if not present, use first 140 chars of `message`                          |
+|         | eg. "@arntzenius: woo I'm tweeting"                                       |
+|---------+---------------------------------------------------------------------------|
+| message | full description of content of notification                               |
+|         | if not present, use `summary`                                             |
+|---------+---------------------------------------------------------------------------|
+| urgent  | true if notification needs urgent attention                               |
+|         | default: false                                                            |
+|---------+---------------------------------------------------------------------------|

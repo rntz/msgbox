@@ -4,26 +4,46 @@
 
 * Event schema
 
-All events are at toplevel objects/dicts.
+Clients should not assume any format for events and should handle malformed
+events without undesirable behavior (eg. crashing). That said, here are some
+suggestions for the formatting of events, to aid interoperability.
 
-| KEY     | USAGE                                                                     |
-|---------+---------------------------------------------------------------------------|
-| app     | human-readable string naming the app generating the notification          |
-|         | eg. "twitsend.pl"                                                         |
-|---------+---------------------------------------------------------------------------|
-| source  | human-readable string naming the source generating the notification       |
-|         | eg. "twitter", "irc", "gmail"                                             |
-|---------+---------------------------------------------------------------------------|
-| title   | very short description of what notification is about (roughly <=40 chars) |
-|         | eg. "tweet from @arntzenius", "message in #cslounge from rntz"            |
-|---------+---------------------------------------------------------------------------|
-| summary | short description of content of notification (roughly <=140 chars)        |
-|         | if not present, use first 140 chars of `message`                          |
-|         | eg. "@arntzenius: woo I'm tweeting"                                       |
-|---------+---------------------------------------------------------------------------|
-| message | full description of content of notification                               |
-|         | if not present, use `summary`                                             |
-|---------+---------------------------------------------------------------------------|
-| urgent  | true if notification needs urgent attention                               |
-|         | default: false                                                            |
-|---------+---------------------------------------------------------------------------|
+All events should be objects/dicts. All keys are optional, but should be present
+if a meaningful value can be provided for them (that differs from their default
+value, if they have a default). In particular, at least one of "title",
+"summary", or "message" should be provided if the event is to have any
+portably-displayable form.
+
+| KEY      | USAGE                                                                              |
+|----------+------------------------------------------------------------------------------------|
+| app      | human-readable string naming the app generating the event                          |
+|          | eg. "twitsend.pl"                                                                  |
+|----------+------------------------------------------------------------------------------------|
+| medium   | human-readable string naming the medium in which the event occurred                |
+|          | eg. "email", "irc", "twitter"                                                      |
+|----------+------------------------------------------------------------------------------------|
+| fromurl  | A URL (or URN) identifying the source of the event.                                |
+|          | eg. irc://irc.freenode.net/#freenode mailto:daekharel@gmail.com                    |
+|----------+------------------------------------------------------------------------------------|
+| url      | A URL (or URN) that points to a resource representing the event itself.            |
+|          | eg. https://twitter.com/twitter/status/319518442891907073                          |
+|----------+------------------------------------------------------------------------------------|
+| title    | very short description of what event is about (roughly <=40 chars)                 |
+|          | eg. "tweet from @arntzenius", "message in #freenode from rntz"                     |
+|----------+------------------------------------------------------------------------------------|
+| summary  | short description of content of event (roughly <=140 chars)                        |
+|          | if not present and `message` is <=140 chars, use `message`                         |
+|          | if `message` is >140 chars, use first 137 chars of `message` followed by "..."     |
+|          | eg. "@arntzenius: woo I'm tweeting"                                                |
+|----------+------------------------------------------------------------------------------------|
+| message  | full description of content of event                                               |
+|          | if not present, use `summary`                                                      |
+|----------+------------------------------------------------------------------------------------|
+| urgent   | true if notification needs urgent attention                                        |
+|          | default: false                                                                     |
+|----------+------------------------------------------------------------------------------------|
+| datetime | A representation of the date and time at which the event occurred.                 |
+|          | TODO: think more about how this should be represented                              |
+|          | http://infiniteundo.com/post/25326999628/falsehoods-programmers-believe-about-time |
+|          | for now use ISO 8601 format YYYY-MM-DDTHH:MM:SSZ, always using UTC                 |
+|----------+------------------------------------------------------------------------------------|

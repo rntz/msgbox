@@ -23,10 +23,10 @@ portably-displayable form.
 |          | eg. "email", "irc", "twitter"                                                      |
 |----------+------------------------------------------------------------------------------------|
 | fromurl  | A URL (or URN) identifying the source of the event.                                |
-|          | eg. irc://irc.freenode.net/#freenode mailto:daekharel@gmail.com                    |
+|          | eg. "irc://irc.freenode.net/#freenode", "mailto:daekharel@gmail.com"               |
 |----------+------------------------------------------------------------------------------------|
 | url      | A URL (or URN) that points to a resource representing the event itself.            |
-|          | eg. https://twitter.com/twitter/status/319518442891907073                          |
+|          | eg. "https://twitter.com/twitter/status/319518442891907073"                        |
 |----------+------------------------------------------------------------------------------------|
 | title    | very short description of what event is about (roughly <=40 chars)                 |
 |          | eg. "tweet from @arntzenius", "message in #freenode from rntz"                     |

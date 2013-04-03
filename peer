@@ -410,9 +410,11 @@ def parse_config(options):
 
     cfg = Config.load_file(cfg_file)
 
+    test(cfg.state_file_path,
+         "Don't know where to find state file. Is HOME set?")
     # TODO: create fresh state automatically
-    test(cfg.state_file_path and os.path.exists(cfg.state_file_path),
-         "No state file found")
+    test(os.path.exists(cfg.state_file_path),
+         "No state file found; expecting one at " + cfg.state_file_path)
     return cfg
 
 

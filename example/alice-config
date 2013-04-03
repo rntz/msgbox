@@ -1,6 +1,6 @@
 {
   "peer": "alice",
   "state": "example/alice-state",
-  "listen": "tcp://localhost:23279",
+  "listen": "tcp://localhost:51723",
   "remotes": ["unix://example/bob-listen"]
 }

@@ -1,3 +1,7 @@
+* Port numbers
+
+49152-65535 are port numbers that can't be registered with IANA. We'll use 51723.
+
 * Event schema
 
 All events are at toplevel objects/dicts.

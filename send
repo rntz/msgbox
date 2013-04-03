@@ -16,7 +16,8 @@ class Options(optparse.OptionParser):
         self.add_option('-r', '--remote', dest='address', default=None)
         self.add_option('-c', '--config-file', dest='config_file', default=None)
         self.add_option('-a', '--args', dest='from_args', action='store_true')
-        self.add_option('-f', '--field', dest='fields', action='append', nargs=3)
+        self.add_option('-f', '--field', dest='fields', action='append', nargs=3,
+                        default=[])
 
 def main(args):
     def test(cond, msg):

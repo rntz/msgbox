@@ -16,8 +16,8 @@ class Options(optparse.OptionParser):
         self.add_option('-r', '--remote', dest='address', default=None)
         self.add_option('-c', '--config-file', dest='config_file', default=None)
         self.add_option('-a', '--args', dest='from_args', action='store_true')
-        self.add_option('-f', '--field', dest='fields', action='append', nargs=3,
-                        default=[])
+        self.add_option('-f', '--field', dest='fields', action='append',
+                        nargs=3, default=[])
 
 def main(args):
     def test(cond, msg):
@@ -25,40 +25,38 @@ def main(args):
 
     parser = Options()
     (options, args) = parser.parse_args(args)
-    options.from_args = options.from_args or bool(options.fields)
-    if not options.from_args:
+
+    from_args = options.from_args or bool(options.fields)
+    if not from_args:
         test(not args, "Unexpected positional arguments")
 
     address = options.address
     if address:
         address = Address.from_str(address)
     else:
-        cfg_file = options.config_file
-        if cfg_file is None:
-            cfg_file, found = find_msgbox_config_file()
-            test(found, "No config file found")
-        with open(cfg_file) as f:
-            cfg = json.load(f)
-        address = Address.from_json(cfg['listen_address'])
+        cfg_file = options.config_file or Config.find_config_file_path()
+        test(cfg_file and os.path.exists(cfg_file), "No config file found")
+        address = Config.load_file(cfg_file).listen_address
 
     # we figure out what JSON to send...
-    if options.from_args:
+    if from_args:
         # make a string-string dict from our arguments and explicitly-given
         # fields
         assert len(args) % 2 == 0 # TODO: error message
-        msgdata = dict(zip(args[::2], args[1::2]))
+        jsonobj = dict(zip(args[::2], args[1::2]))
         # add in explicit fields
         type_ctors = {'int': int, 'string': str, 'float': float,
                       'json': json.loads}
         for typ, name, val in options.fields:
-            msgdata[name] = type_ctors[typ](val)
+            # TODO: handle json.loads failing
+            jsonobj[name] = type_ctors[typ](val)
     else:
         # read it from stdin
-        msgdata = json.load(sys.stdin)
+        jsonobj = json.load(sys.stdin)
 
     # ... set up the messages we'll send ...
     hello = MessageHelloSender()
-    message = MessageGenEvent(msgdata)
+    message = MessageGenEvent(jsonobj)
     data = hello.serialize() + message.serialize()
 
     # ... and send it to the address

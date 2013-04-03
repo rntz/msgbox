@@ -144,8 +144,8 @@ class JsonRecord(Jsonable):
             setattr(self, k, v)
 
     @classmethod
-    def from_json(klass, json):
-        obj = klass(**json)
+    def from_json(klass, jsonobj):
+        obj = klass(**jsonobj)
         obj.post_from_json()
         return obj
 
@@ -184,10 +184,10 @@ class Address(JsonRecord):
         assert False
 
     @classmethod
-    def from_json(klass, json):
-        if isinstance(json, (str, unicode)):
-            return klass.from_str(json)
-        return super(Address, klass).from_json(json)
+    def from_json(klass, jsonobj):
+        if isinstance(jsonobj, (str, unicode)):
+            return klass.from_str(jsonobj)
+        return super(Address, klass).from_json(jsonobj)
 
     @staticmethod
     def from_str(string):
@@ -276,8 +276,8 @@ class Event(Jsonable):
         self.data = data
 
     @staticmethod
-    def from_json(json):
-        return Event(json['source'], json['timestamp'], json['data'])
+    def from_json(jsonobj):
+        return Event(jsonobj['source'], jsonobj['timestamp'], jsonobj['data'])
 
     def to_json(self):
         return {'source': to_json(self.source),
@@ -329,8 +329,8 @@ class VClock(Jsonable):
     def iteritems(self): return self.times.iteritems()
 
     @staticmethod
-    def from_json(json):
-        return VClock(json)
+    def from_json(jsonobj):
+        return VClock(jsonobj)
 
     def to_json(self):
         return dict(self.times)
@@ -365,9 +365,9 @@ class EventStore(Jsonable):
         return evdict
 
     @staticmethod
-    def from_json(json):
+    def from_json(jsonobj):
         store = EventStore()
-        for source, events in json.iteritems():
+        for source, events in jsonobj.iteritems():
             events = store.events[source] = [Event(source, e[0], e[1])
                                              for e in events]
             # check event list is strictly sorted by timestamp
@@ -376,10 +376,10 @@ class EventStore(Jsonable):
         return store
 
     def to_json(self):
-        json = {}
+        jsonobj = {}
         for source, events in self.events.iteritems():
-            json[source] = [[to_json(e.timestamp), e.data] for e in events]
-        return json
+            jsonobj[source] = [[to_json(e.timestamp), e.data] for e in events]
+        return jsonobj
 
 
 # Handles splitting things into messages
@@ -387,8 +387,8 @@ class MessageDispatcher(asyncore.dispatcher):
     def __init__(self, **kwargs):
         asyncore.dispatcher.__init__(self, **kwargs)
         self.recvd = []
-        # True if we're reading a message's length header, False if we're reading
-        # its body
+        # True if we're reading a message's length header, False if we're
+        # reading its body
         self.reading_header = True
         self.expecting = Message.HEADER_LEN
 
@@ -444,15 +444,20 @@ class MessageDispatcher(asyncore.dispatcher):
 # Configuration helpers
 class Config(object):
     # TODO: log-file config entry, with defaults from XDG
-    def __init__(self, json):
-        self.peer_id = json['peer']
-        self.listen_address = Address.from_json(json['listen'])
-        self.remote_addresses = map(Address.from_json, json['remotes'])
-        self.state_file_path = self._find_state_file_path(json)
+    def __init__(self, jsonobj):
+        self.peer_id = jsonobj['peer']
+        self.listen_address = Address.from_json(jsonobj['listen'])
+        self.remote_addresses = map(Address.from_json, jsonobj['remotes'])
+        self.state_file_path = self._find_state_file_path(jsonobj)
 
-    def _find_state_file_path(self, json):
-        if 'state' in json:
-            return json['state']
+    @classmethod
+    def load_file(klass, filepath):
+        with open(filepath) as f:
+            return Config(json.load(f))
+
+    def _find_state_file_path(self, jsonobj):
+        if 'state' in jsonobj:
+            return jsonobj['state']
 
         # if not given in config file, fall back on XDG
         xdg = _find_xdg_info()

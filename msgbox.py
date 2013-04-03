@@ -172,6 +172,17 @@ class Address(JsonRecord):
         elif self.type == ADDRESS_UNIX: return self.path
         assert False
 
+    # Given the `addr` returned by a call to socket.accept() on a socket
+    # listening on the address `self`, returns an Address representing `addr`,
+    # or None if one could not be determined.
+    #
+    # In other words, figure out what address an accepted incoming socket is
+    # connecting from, if we can.
+    def from_accepted(self, addr):
+        if self.type == ADDRESS_TCP: return AddressTCP(*addr)
+        elif self.type == ADDRESS_UNIX: return None
+        assert False
+
     @classmethod
     def from_json(klass, json):
         if isinstance(json, (str, unicode)):
@@ -431,6 +442,37 @@ class MessageDispatcher(asyncore.dispatcher):
 
 
 # Configuration helpers
+class Config(object):
+    def __init__(self, json):
+        self.peer_id = json['peer']
+        self.listen_address = Address.from_json(json['listen'])
+        self.remote_addresses = map(Address.from_json, json['remotes'])
+        self.state_file_path = self._find_state_file_path(json)
+
+    def _find_state_file_path(self, json):
+        if 'state' in json:
+            return json['state']
+
+        # if not given in config file, fall back on XDG
+        xdg = _find_xdg_info()
+        for d in xdg['data_dirs']:
+            path = os.path.join(d, 'msgbox')
+            if os.path.exists(path):
+                return path
+        # TODO: handle xdg['data_home'] being None
+        return os.path.join(xdg['data_home'], 'msgbox')
+
+    # can return a path to a file that doesn't exist yet
+    @staticmethod
+    def find_config_file_path():
+        xdg = _find_xdg_info()
+        for d in xdg['cfg_dirs']:
+            path = os.path.join(d, 'msgbox')
+            if os.path.exists(os.path.join(d, 'msgbox')):
+                return path
+        # TODO: handle xdg['cfg_home'] being None
+        return os.path.join(xdg['cfg_home'], 'msgbox')
+
 def _find_xdg_info():
     home = os.getenv('HOME')
 
@@ -456,29 +498,3 @@ def _find_xdg_info():
             'cfg_dirs': cfg_dirs,
             'data_home': data_home,
             'data_dirs': data_dirs}
-
-def find_msgbox_config_file():
-    # returns path, found
-    # path is the path to the config file
-    # found is True if the file exists already, False if it should be created
-    xdg = _find_xdg_info()
-    for d in xdg['cfg_dirs']:
-        path = os.path.join(d, 'msgbox')
-        if os.path.exists(os.path.join(d, 'msgbox')):
-            return path, True
-    # TODO: handle xdg['cfg_home'] being None
-    return os.path.join(xdg['cfg_home'], 'msgbox'), False
-
-def find_msgbox_state_file(config):
-    # if explicitly given in config, just give that back
-    if 'state_file' in config:
-        path = config['state_file']
-        return path, os.path.exists(path)
-    # otherwise, fall back on XDG
-    xdg = _find_xdg_info()
-    for d in xdg['data_dirs']:
-        path = os.path.join(d, 'msgbox')
-        if os.path.exists(path):
-            return path, True
-    # TODO: handle xdg['data_home'] being None
-    return os.path.join(xdg['data_home'], 'msgbox'), False

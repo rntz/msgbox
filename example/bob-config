@@ -1,8 +1,8 @@
 {
-  "peer_id": "bob",
-  "state_file": "example/bob-state",
-  "listen_address": "unix://example/bob-listen",
-  "remote_addresses": [ {
+  "peer": "bob",
+  "state": "example/bob-state",
+  "listen": "unix://example/bob-listen",
+  "remotes": [ {
       "type": "tcp",
       "host": "localhost",
       "port": 23279

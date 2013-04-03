@@ -1,6 +1,6 @@
 {
-  "peer_id": "alice",
-  "state_file": "example/alice-state",
-  "listen_address": "tcp://localhost:23279",
-  "remote_addresses": []
+  "peer": "alice",
+  "state": "example/alice-state",
+  "listen": "tcp://localhost:23279",
+  "remotes": ["unix://example/bob-listen"]
 }

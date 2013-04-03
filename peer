@@ -40,7 +40,7 @@ class ListenHandler(asyncore.dispatcher):
         self.parent = parent
 
     def handle_accept(self):
-        # TODO: should we try/catch here for EAGAIN/EWOULDBLOCK
+        # TODO: should we try/catch here for EAGAIN/EWOULDBLOCK?
         pair = self.accept()
         # handle_accept() shouldn't be called unless we can accept, I think?
         assert pair is not None
@@ -105,7 +105,6 @@ class OutgoingHandler(ConnHandler):
             (typ, value, tb) = sys.exc_info()
             if issubclass(typ, socket.error):
                 # connection failed
-                self.close()
                 self.parent.handle_failed_connect(self, value[0], value[1])
             else:
                 ConnHandler.handle_error(self)
@@ -132,18 +131,21 @@ class State(Jsonable):
 # deals with IO and shit
 # I don't really know what this class' responsibilities are
 # it does what it does
-# TODO: deal with shutting down?
 class Peer(object):
-    def __init__(self, peer_id, state, listen_address, remote_addresses):
+    def __init__(self, config):
         self.queue = MultiQueue()
         self.socket_map = {}    # for dispatchers
         self.peers = {}
         self.timers = []
 
-        self.peer_id = peer_id
-        self.state = state
-        self.listen_address = listen_address
-        self.remote_addresses = remote_addresses # remotes to connect to
+        self.peer_id = config.peer_id
+        self.listen_address = config.listen_address
+        self.remote_addresses = config.remote_addresses
+
+        # initialize our state
+        self.state_file_path = config.state_file_path
+        with open(self.state_file_path) as f:
+            self.state = State.from_json(json.load(f))
 
     # ----- Logging -----
     def log(self, level, msg, *args):
@@ -161,8 +163,10 @@ class Peer(object):
         listen_socket = ListenHandler(parent=self)
         listen_socket.create_socket(self.listen_address.socket_address_family(),
                                     socket.SOCK_STREAM)
+        listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listen_socket.bind(self.listen_address.socket_address())
         listen_socket.listen(LISTEN_BACKLOG)
+        self.listen_socket = listen_socket
         self.info('listening on %s', self.listen_address)
 
         # kickstart the remote-connection process
@@ -201,12 +205,15 @@ class Peer(object):
     def try_remote_connect(self):
         assert self.remote_addresses
         address = self.remote_addresses.pop()
-        self.info('connecting to remote at %r', address)
+        self.info('connecting to remote at %s', address)
 
         sock = OutgoingHandler(self)
-        sock.create_socket(address.socket_address_family(), socket.SOCK_STREAM)
-        # TODO: error handling (eg. ECONNREFUSED)
-        sock.connect(address.socket_address())
+        try:
+            sock.create_socket(address.socket_address_family(),
+                               socket.SOCK_STREAM)
+            sock.connect(address.socket_address())
+        except socket.error as exc:
+            self.handle_failed_connect(sock, exc[0], exc[1])
 
         if self.remote_addresses:
             self.add_timer(REMOTE_CONNECT_DELAY_S, self.try_remote_connect)
@@ -235,8 +242,9 @@ class Peer(object):
 
     # ----- Incoming connections -----
     def handle_incoming(self, sock, addr):
-        # TODO: print useful address information
-        self.info('accepted incoming connection from %r', addr)
+        addr = self.listen_address.from_accepted(addr)
+        self.info('accepted incoming connection from %s',
+                  addr or "unknown address")
         IncomingHandler(self, sock=sock)
 
     def incoming_coro(self, sock):
@@ -291,6 +299,7 @@ class Peer(object):
 
     # ----- Outgoing connections -----
     def handle_failed_connect(self, sock, errnum, errmsg):
+        sock.close()
         # TODO: useful printing of sockets in error messages
         self.warn('outgoing connection on %s failed: %s', sock, errmsg)
 
@@ -393,23 +402,17 @@ def parse_config(options):
     def test(cond, msg):
         if not cond: abort(msg + ", quitting")
 
-    cfg_file = options.config_file
-    if cfg_file is None:
-        cfg_file, found = find_msgbox_config_file()
-        # TODO: indicate where one was expected or could be put
-        test(found, "No config file found")
+    cfg_file = (options.config_file or
+                Config.find_config_file_path())
+    # TODO: indicate where one was expected or could be put
+    test(cfg_file and os.path.exists(cfg_file), "No config file found")
 
-    with open(cfg_file, 'r') as f:
-        cfg = json.load(f)
+    with open(cfg_file) as f:
+        cfg = Config(json.load(f))
 
-    state_file, found = find_msgbox_state_file(cfg)
     # TODO: create fresh state automatically
-    test(found, "No state file found")
-    with open(state_file) as f:
-        state = json.load(f)
-
-    # TODO: config verification
-    return cfg, state
+    test(cfg.state_file_path, "No state file found")
+    return cfg
 
 
 # The main program
@@ -417,16 +420,9 @@ def main(args):
     parser = Options()
     (options, args) = parser.parse_args(args)
     assert not args        # we don't take positional args. TODO: error message.
-    cfg, state = parse_config(options)
 
-    # Parse the config into arguments for Peer() constructor.
-    ctors = {'peer_id': lambda x: x,
-             'listen_address': Address.from_json,
-             'remote_addresses': lambda x: map(Address.from_json, x)}
-    kwargs = {name: ctor(cfg[name]) for name, ctor in ctors.iteritems()}
-    kwargs['state'] = State.from_json(state)
-
-    peer = Peer(**kwargs)
+    cfg = parse_config(options)
+    peer = Peer(cfg)
 
     # set up signal handlers to shut down the peer and exit main loop
     quitting = [False]

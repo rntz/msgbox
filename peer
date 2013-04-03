@@ -400,12 +400,14 @@ class Options(optparse.OptionParser):
 
 def parse_config(options):
     def test(cond, msg):
-        if not cond: abort(msg + ", quitting")
+        if not cond: abort("Quitting: " + msg)
 
-    cfg_file = (options.config_file or
-                Config.find_config_file_path())
+    cfg_file = (options.config_file or Config.find_config_file_path())
     # TODO: indicate where one was expected or could be put
-    test(cfg_file and os.path.exists(cfg_file), "No config file found")
+    test(cfg_file, "Don't know where to find config file. Is HOME set?")
+    test(os.path.exists(cfg_file),
+         "No config file found; expecting one at " + cfg_file)
+
     cfg = Config.load_file(cfg_file)
 
     # TODO: create fresh state automatically

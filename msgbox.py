@@ -8,6 +8,10 @@ import socket
 import struct
 import types
 
+APP_DIR_NAME = 'msgbox'
+CONFIG_FILE_NAME = 'config'
+STATE_FILE_NAME = 'state'
+
 def def_enum(name, typestring):
     types = typestring.split()
     globals()[name.upper() + '_TYPES'] = types
@@ -460,24 +464,38 @@ class Config(object):
             return jsonobj['state']
 
         # if not given in config file, fall back on XDG
+        d = self._find_xdg_state_dir()
+        if d is not None: return os.path.join(d, STATE_FILE_NAME)
+        return None
+
+    def _find_xdg_state_dir(self):
         xdg = _find_xdg_info()
         for d in xdg['data_dirs']:
-            path = os.path.join(d, 'msgbox')
+            path = os.path.join(d, APP_DIR_NAME)
             if os.path.exists(path):
                 return path
-        # TODO: handle xdg['data_home'] being None
-        return os.path.join(xdg['data_home'], 'msgbox')
+        data_home = xdg['data_home']
+        if data_home is not None:
+            return os.path.join(data_home, APP_DIR_NAME)
+        return None
 
     # can return a path to a file that doesn't exist yet
     @staticmethod
     def find_config_file_path():
+        d = Config.find_xdg_config_dir()
+        if d: return os.path.join(d, CONFIG_FILE_NAME)
+
+    @staticmethod
+    def find_xdg_config_dir():
         xdg = _find_xdg_info()
         for d in xdg['cfg_dirs']:
-            path = os.path.join(d, 'msgbox')
-            if os.path.exists(os.path.join(d, 'msgbox')):
+            path = os.path.join(d, APP_DIR_NAME)
+            if os.path.exists(path):
                 return path
-        # TODO: handle xdg['cfg_home'] being None
-        return os.path.join(xdg['cfg_home'], 'msgbox')
+        cfg_home = xdg['cfg_home']
+        if cfg_home is not None:
+            return os.path.join(cfg_home, APP_DIR_NAME)
+        return None
 
 def _find_xdg_info():
     home = os.getenv('HOME')

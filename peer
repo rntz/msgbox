@@ -17,6 +17,9 @@ LISTEN_BACKLOG = 5
 # heuristic, not necessary for correctness.
 REMOTE_CONNECT_DELAY_S = 2.0
 
+# We put at least this much time between saving our state
+SAVE_STATE_DELAY_S = 0.5
+
 # The timeout to pass to asyncore.loop(). We'll be stuck in a syscall and unable
 # to respond to signals for approximately this long, so keep it small to allow
 # ctrl-C etc. to work reasonably well.
@@ -114,18 +117,20 @@ class OutgoingHandler(ConnHandler):
 
 # The mutable state (as opposed to mostly-static configuration) of a peer node.
 class State(Jsonable):
-    def __init__(self, vclock, event_store):
-        self.vclock = vclock
-        self.event_store = event_store
+    def __init__(self, vclock=None, event_store=None):
+        self.vclock = vclock if vclock is not None else VClock()
+        self.event_store = (event_store
+                            if event_store is not None
+                            else EventStore())
 
     def to_json(self):
         return {'vclock': self.vclock.to_json(),
                 'events': self.event_store.to_json()}
 
     @staticmethod
-    def from_json(jsonobj):
-        return State(VClock.from_json(jsonobj['vclock']),
-                     EventStore.from_json(jsonobj['events']))
+    def from_json(obj):
+        return State(VClock.from_json(obj['vclock']),
+                     EventStore.from_json(obj['events']))
 
 
 # deals with IO and shit
@@ -144,9 +149,25 @@ class Peer(object):
 
         # initialize our state
         self.state_file_path = config.state_file_path
-        # TODO: handle state file not existing yet
-        with open(self.state_file_path) as f:
-            self.state = State.from_json(json.load(f))
+        if os.path.exists(self.state_file_path):
+            with open(self.state_file_path) as f:
+                self.state = State.from_json(json.load(f))
+        else:
+            # create the file with an empty state
+            self.debug('creating fresh state file')
+            self.state = State(VClock(), EventStore())
+            with open(self.state_file_path, 'w') as f:
+                json.dump(self.state.to_json(), f)
+
+        # 3-valued flag indicating our save-state:
+        #
+        # - 'clean': file up-to-date and we can save to it freely
+        #
+        # - 'waiting': file up-to-date, but we've saved recently so if it
+        #   changes we need to wait before saving again
+        #
+        # - 'dirty': file not up-to-date and we must save once timer expires.
+        self.state_state = 'clean'
 
     # ----- Logging -----
     def log(self, level, msg, *args):
@@ -276,14 +297,31 @@ class Peer(object):
                     assert message.type == MESSAGE_EVENT
                     self.handle_event(message.event, recvd_from=sock)
 
+            elif node_type == NODE_CLIENT:
+                # send updates for client
+                events = self.updates_for(hello.vclock)
+                message = ([MessageEvent(e) for e in events]
+                           + [MessageUptodate()])
+                self.send_many([sock], messages)
+
+                while True:
+                    message = yield
+                    if message.type == MESSAGE_GEN_EVENT:
+                        self.gen_event(message.data)
+                    elif message.type == MESSAGE_EVENT:
+                        self.handle_event(message.event, recvd_from=sock)
+                    else:
+                        # TODO: handle bad event types
+                        assert False # bad message type
+
             elif node_type == NODE_SENDER:
                 # just read events from them.
                 while True:
                     message = yield
-                    if message.type == MESSAGE_EVENT:
-                        self.handle_event(message.event, recvd_from=sock)
-                    elif message.type == MESSAGE_GEN_EVENT:
+                    if message.type == MESSAGE_GEN_EVENT:
                         self.gen_event(message.data)
+                    elif message.type == MESSAGE_EVENT:
+                        self.handle_event(message.event, recvd_from=sock)
                     else:
                         # TODO: handle bad event types
                         assert False # bad message type
@@ -375,10 +413,33 @@ class Peer(object):
         # TODO: schedule state-save?
         self.state.vclock.update(event.source, event.timestamp)
         self.state.event_store.add(event)
+        self.mark_dirty()
         # ... and send it on to all our neighboring peers (except the one that
         # sent it to us)
         dests = (x for x in self.peers.values() if x is not recvd_from)
         self.send_one(dests, MessageEvent(event))
+
+    def mark_dirty(self):
+        if self.state_state == 'clean':
+            self.save_state()
+        else:
+            self.debug("delaying saving state")
+            self.state_state = 'dirty'
+
+    def save_state(self):
+        self.debug("saving state to file %s" % self.state_file_path)
+        with open(self.state_file_path, 'w') as f:
+            json.dump(self.state.to_json(), f)
+        self.state_state = 'waiting'
+        self.add_timer(SAVE_STATE_DELAY_S, self.can_save_state)
+
+    def can_save_state(self):
+        if self.state_state == 'dirty':
+            self.debug("performing delayed state-save")
+            self.save_state()
+        else:
+            assert self.state_state == 'waiting'
+            self.state_state = 'clean'
 
     def gen_event(self, data):
         source = self.peer_id
@@ -412,9 +473,6 @@ def parse_config(options):
 
     test(cfg.state_file_path,
          "Don't know where to find state file. Is HOME set?")
-    # TODO: create fresh state automatically
-    test(os.path.exists(cfg.state_file_path),
-         "No state file found; expecting one at " + cfg.state_file_path)
     return cfg
 
 

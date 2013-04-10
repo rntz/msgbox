@@ -148,8 +148,8 @@ class JsonRecord(Jsonable):
             setattr(self, k, v)
 
     @classmethod
-    def from_json(klass, jsonobj):
-        obj = klass(**jsonobj)
+    def from_json(klass, obj):
+        obj = klass(**obj)
         obj.post_from_json()
         return obj
 
@@ -188,10 +188,10 @@ class Address(JsonRecord):
         assert False
 
     @classmethod
-    def from_json(klass, jsonobj):
-        if isinstance(jsonobj, (str, unicode)):
-            return klass.from_str(jsonobj)
-        return super(Address, klass).from_json(jsonobj)
+    def from_json(klass, obj):
+        if isinstance(obj, (str, unicode)):
+            return klass.from_str(obj)
+        return super(Address, klass).from_json(obj)
 
     @staticmethod
     def from_str(string):
@@ -264,6 +264,10 @@ def MessageHelloPeer(peer_id, vclock):
 def MessageHelloSender():
     return Message(type=MESSAGE_HELLO, node_type=NODE_SENDER)
 
+def MessageHelloClient(vclock):
+    return Message(type=MESSAGE_HELLO, node_type=NODE_CLIENT,
+                   vclock=vclock.copy())
+
 def MessageWelcome(peer_id, vclock):
     return Message(type=MESSAGE_WELCOME, peer_id=peer_id, vclock=vclock.copy())
 
@@ -280,8 +284,8 @@ class Event(Jsonable):
         self.data = data
 
     @staticmethod
-    def from_json(jsonobj):
-        return Event(jsonobj['source'], jsonobj['timestamp'], jsonobj['data'])
+    def from_json(obj):
+        return Event(obj['source'], obj['timestamp'], obj['data'])
 
     def to_json(self):
         return {'source': to_json(self.source),
@@ -333,8 +337,8 @@ class VClock(Jsonable):
     def iteritems(self): return self.times.iteritems()
 
     @staticmethod
-    def from_json(jsonobj):
-        return VClock(jsonobj)
+    def from_json(obj):
+        return VClock(obj)
 
     def to_json(self):
         return dict(self.times)
@@ -369,9 +373,9 @@ class EventStore(Jsonable):
         return evdict
 
     @staticmethod
-    def from_json(jsonobj):
+    def from_json(obj):
         store = EventStore()
-        for source, events in jsonobj.iteritems():
+        for source, events in obj.iteritems():
             events = store.events[source] = [Event(source, e[0], e[1])
                                              for e in events]
             # check event list is strictly sorted by timestamp
@@ -380,10 +384,10 @@ class EventStore(Jsonable):
         return store
 
     def to_json(self):
-        jsonobj = {}
+        obj = {}
         for source, events in self.events.iteritems():
-            jsonobj[source] = [[to_json(e.timestamp), e.data] for e in events]
-        return jsonobj
+            obj[source] = [[to_json(e.timestamp), e.data] for e in events]
+        return obj
 
 
 # Handles splitting things into messages
@@ -446,22 +450,87 @@ class MessageDispatcher(asyncore.dispatcher):
 
 
 # Configuration helpers
+class InvalidConfig(Exception): pass
+
+class XdgConfig(object):
+    _xdg_info = None
+
+    @staticmethod
+    def find_xdg_config_dir():
+        xdg = _find_xdg_info()
+        for d in xdg['cfg_dirs']:
+            path = os.path.join(d, APP_DIR_NAME)
+            if os.path.exists(path):
+                return path
+        cfg_home = xdg['cfg_home']
+        if cfg_home is not None:
+            return os.path.join(cfg_home, APP_DIR_NAME)
+        return None
+
+    @staticmethod
+    def find_xdg_state_dir():
+        xdg = XdgConfig._find_xdg_info()
+        for d in xdg['data_dirs']:
+            path = os.path.join(d, APP_DIR_NAME)
+            if os.path.exists(path):
+                return path
+        data_home = xdg['data_home']
+        if data_home is not None:
+            return os.path.join(data_home, APP_DIR_NAME)
+        return None
+
+    @staticmethod
+    def _find_xdg_info():
+        if XdgConfig._xdg_info is not None:
+            return XdgConfig._xdg_info
+
+        home = os.getenv('HOME')
+
+        cfg_home = os.getenv('XDG_CONFIG_HOME')
+        if cfg_home is None and home is not None:
+            cfg_home = os.path.join(home, '.config')
+
+        cfg_dirs = []
+        if cfg_home is not None: cfg_dirs.append(cfg_home)
+        cfg_dirs.extend(os.getenv('XDG_CONFIG_DIRS', '/etc/xdg').split(':'))
+
+        data_home = os.getenv('XDG_DATA_HOME')
+        if data_home is None and home is not None:
+            data_home = os.path.join(home, '.local/share')
+
+        data_dirs = []
+        if data_home is not None: data_dirs.append(data_home)
+        data_dirs.extend(
+            os.getenv('XDG_DATA_DIRS', '/usr/local/share/:/usr/share/')
+            .split(':'))
+
+        XdgConfig._xdg_info = {
+            'cfg_home': cfg_home,
+            'cfg_dirs': cfg_dirs,
+            'data_home': data_home,
+            'data_dirs': data_dirs}
+        return XdgConfig._xdg_info
+
 class Config(object):
+    listen_address = None
+
+    # TODO: configuration validation with good error messages
     # TODO: log-file config entry, with defaults from XDG
-    def __init__(self, jsonobj):
-        self.peer_id = jsonobj['peer']
-        self.listen_address = Address.from_json(jsonobj['listen'])
-        self.remote_addresses = map(Address.from_json, jsonobj['remotes'])
-        self.state_file_path = self._find_state_file_path(jsonobj)
+    def __init__(self, obj):
+        self.peer_id = obj['peer']
+        if 'listen' in obj:
+            self.listen_address = Address.from_json(obj['listen'])
+        self.remote_addresses = map(Address.from_json, obj.get('remotes',[]))
+        self.state_file_path = self._find_state_file_path(obj)
 
     @classmethod
     def load_file(klass, filepath):
         with open(filepath) as f:
             return Config(json.load(f))
 
-    def _find_state_file_path(self, jsonobj):
-        if 'state' in jsonobj:
-            return jsonobj['state']
+    def _find_state_file_path(self, obj):
+        if 'state' in obj:
+            return obj['state']
 
         # if not given in config file, fall back on XDG
         d = self._find_xdg_state_dir()
@@ -496,29 +565,3 @@ class Config(object):
         if cfg_home is not None:
             return os.path.join(cfg_home, APP_DIR_NAME)
         return None
-
-def _find_xdg_info():
-    home = os.getenv('HOME')
-
-    cfg_home = os.getenv('XDG_CONFIG_HOME')
-    if cfg_home is None and home is not None:
-        cfg_home = os.path.join(home, '.config')
-
-    cfg_dirs = []
-    if cfg_home is not None: cfg_dirs.append(cfg_home)
-    cfg_dirs.extend(os.getenv('XDG_CONFIG_DIRS', '/etc/xdg').split(':'))
-
-    data_home = os.getenv('XDG_DATA_HOME')
-    if data_home is None and home is not None:
-        data_home = os.path.join(home, '.local/share')
-
-    data_dirs = []
-    if data_home is not None: data_dirs.append(data_home)
-    data_dirs.extend(
-        os.getenv('XDG_DATA_DIRS', '/usr/local/share/:/usr/share/')
-        .split(':'))
-
-    return {'cfg_home': cfg_home,
-            'cfg_dirs': cfg_dirs,
-            'data_home': data_home,
-            'data_dirs': data_dirs}

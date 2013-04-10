@@ -10,6 +10,9 @@ import time
 
 from msgbox import *
 
+CONFIG_FILE_NAME = 'peer'
+STATE_FILE_NAME = 'peer'
+
 LISTEN_BACKLOG = 5
 
 # We delay approximately this long between connecting to remotes, to allow
@@ -34,6 +37,38 @@ globals().update({'LOG_' + l.upper(): i for i,l in LOG_LEVEL_NAMES.iteritems()})
 # exceptions
 # error thrown in a reader coro to indicate connection has closed.
 class ClosedError(Exception): pass
+
+
+class Config(object):
+    listen_address = None
+
+    # TODO: configuration validation with good error messages
+    # TODO: log-file config entry, with defaults from XDG
+    def __init__(self, obj):
+        self.peer_id = obj['peer']
+        if 'listen' in obj:
+            self.listen_address = Address.from_json(obj['listen'])
+        self.remote_addresses = map(Address.from_json, obj.get('remotes',[]))
+        self.state_file_path = self._find_state_file_path(obj)
+
+    @classmethod
+    def load_file(klass, filepath):
+        with open(filepath) as f:
+            return Config(json.load(f))
+
+    # can return a path to a file that doesn't exist yet
+    @staticmethod
+    def find_config_file_path():
+        return XdgConfig.find_xdg_config_file(CONFIG_FILE_NAME)
+
+    def _find_state_file_path(self, obj):
+        if 'state' in obj:
+            return obj['state']
+
+        # if not given in config file, fall back on XDG
+        d = XdgConfig.find_xdg_state_dir()
+        if d is not None:
+            return os.path.join(d, STATE_FILE_NAME)
 
 
 # Handles the socket we listen on incoming connections for

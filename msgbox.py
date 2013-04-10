@@ -9,8 +9,6 @@ import struct
 import types
 
 APP_DIR_NAME = 'msgbox'
-CONFIG_FILE_NAME = 'config'
-STATE_FILE_NAME = 'state'
 
 def def_enum(name, typestring):
     types = typestring.split()
@@ -18,7 +16,7 @@ def def_enum(name, typestring):
     globals().update({name.upper() + '_' + t.upper(): t for t in types})
 
 # Node types - the types of nodes that can connect to us / we can connect to.
-def_enum('node', 'peer sender')
+def_enum('node', 'peer sender client')
 
 # Message types - the types of messages that we can receive.
 def_enum('message', 'hello welcome uptodate event gen_event')
@@ -477,7 +475,16 @@ class XdgConfig(object):
         data_home = xdg['data_home']
         if data_home is not None:
             return os.path.join(data_home, APP_DIR_NAME)
-        return None
+
+    @staticmethod
+    def find_xdg_config_file(filename):
+        d = XdgConfig.find_xdg_config_dir()
+        if d is not None: return os.path.join(d, filename)
+
+    @staticmethod
+    def find_xdg_state_file(filename):
+        d = XdgConfig.find_xdg_state_dir()
+        if d is not None: return os.path.join(d, filename)
 
     @staticmethod
     def _find_xdg_info():
@@ -510,58 +517,3 @@ class XdgConfig(object):
             'data_home': data_home,
             'data_dirs': data_dirs}
         return XdgConfig._xdg_info
-
-class Config(object):
-    listen_address = None
-
-    # TODO: configuration validation with good error messages
-    # TODO: log-file config entry, with defaults from XDG
-    def __init__(self, obj):
-        self.peer_id = obj['peer']
-        if 'listen' in obj:
-            self.listen_address = Address.from_json(obj['listen'])
-        self.remote_addresses = map(Address.from_json, obj.get('remotes',[]))
-        self.state_file_path = self._find_state_file_path(obj)
-
-    @classmethod
-    def load_file(klass, filepath):
-        with open(filepath) as f:
-            return Config(json.load(f))
-
-    def _find_state_file_path(self, obj):
-        if 'state' in obj:
-            return obj['state']
-
-        # if not given in config file, fall back on XDG
-        d = self._find_xdg_state_dir()
-        if d is not None: return os.path.join(d, STATE_FILE_NAME)
-        return None
-
-    def _find_xdg_state_dir(self):
-        xdg = _find_xdg_info()
-        for d in xdg['data_dirs']:
-            path = os.path.join(d, APP_DIR_NAME)
-            if os.path.exists(path):
-                return path
-        data_home = xdg['data_home']
-        if data_home is not None:
-            return os.path.join(data_home, APP_DIR_NAME)
-        return None
-
-    # can return a path to a file that doesn't exist yet
-    @staticmethod
-    def find_config_file_path():
-        d = Config.find_xdg_config_dir()
-        if d: return os.path.join(d, CONFIG_FILE_NAME)
-
-    @staticmethod
-    def find_xdg_config_dir():
-        xdg = _find_xdg_info()
-        for d in xdg['cfg_dirs']:
-            path = os.path.join(d, APP_DIR_NAME)
-            if os.path.exists(path):
-                return path
-        cfg_home = xdg['cfg_home']
-        if cfg_home is not None:
-            return os.path.join(cfg_home, APP_DIR_NAME)
-        return None

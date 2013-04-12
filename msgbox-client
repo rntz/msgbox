@@ -22,9 +22,10 @@ ASYNCORE_TIMEOUT_S = 1.0
 
 # log levels
 LOG_LEVELS = 'debug info warn error'.split()
-LOG_LEVEL_NAMES = {i: n for i,n in enumerate(LOG_LEVELS)}
+LOG_LEVEL_NAMES = dict((i,n) for i,n in enumerate(LOG_LEVELS))
 def log_level_name(i): return LOG_LEVEL_NAMES[i]
-globals().update({'LOG_' + l.upper(): i for i,l in LOG_LEVEL_NAMES.iteritems()})
+globals().update(dict(
+    ('LOG_' + l.upper(), i) for i,l in LOG_LEVEL_NAMES.iteritems()))
 
 
 # Options and configuration

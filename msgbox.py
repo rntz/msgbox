@@ -16,7 +16,7 @@ PEER_STATE_FILE_NAME = 'peer'
 def def_enum(name, typestring):
     types = typestring.split()
     globals()[name.upper() + '_TYPES'] = types
-    globals().update({name.upper() + '_' + t.upper(): t for t in types})
+    globals().update(dict((name.upper() + '_' + t.upper(), t) for t in types))
 
 # Node types - the types of nodes that can connect to us / we can connect to.
 def_enum('node', 'peer sender client')
@@ -176,7 +176,7 @@ class JsonRecord(Jsonable):
     def post_from_json(self): return
 
     def to_json(self):
-        return {k: to_json(getattr(self, k)) for k in self._attrs}
+        return dict((k, to_json(getattr(self, k))) for k in self._attrs)
 
 
 # A address (usually of a remote node)
@@ -359,7 +359,7 @@ class VClock(Jsonable):
         return VClock(obj)
 
     def to_json(self):
-        return {k: v for k,v in self.times.iteritems() if v != 0}
+        return dict(((k,v) for k,v in self.times.iteritems() if v != 0))
 
 
 # The event store

@@ -27,9 +27,10 @@ ASYNCORE_TIMEOUT_S = 1.0
 
 # log levels
 LOG_LEVELS = 'debug info warn error'.split()
-LOG_LEVEL_NAMES = {i: n for i,n in enumerate(LOG_LEVELS)}
+LOG_LEVEL_NAMES = dict((i,n) for i,n in enumerate(LOG_LEVELS))
 def log_level_name(i): return LOG_LEVEL_NAMES[i]
-globals().update({'LOG_' + l.upper(): i for i,l in LOG_LEVEL_NAMES.iteritems()})
+globals().update(dict(
+    ('LOG_' + l.upper(), i) for i,l in LOG_LEVEL_NAMES.iteritems()))
 
 # exceptions
 # error thrown in a reader coro to indicate connection has closed.
@@ -156,6 +157,7 @@ class Peer(object):
             # create the file with an empty state
             self.debug('creating fresh state file')
             self.state = PeerState()
+            # TODO: create directory if it does not exist.
             with open(self.state_file_path, 'w') as f:
                 json.dump(self.state.to_json(), f)
 

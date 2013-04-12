@@ -173,7 +173,7 @@ class Peer(object):
     def log(self, level, msg, *args):
         # TODO: real logging
         name = log_level_name(level).upper()
-        print >>sys.stderr, '---------- %s: %s' % (name, (msg % args))
+        print >>sys.stderr, '%s: %s' % (name, (msg % args))
 
     def debug(self, msg, *args): self.log(LOG_DEBUG, msg, *args)
     def info(self, msg, *args): self.log(LOG_INFO, msg, *args)

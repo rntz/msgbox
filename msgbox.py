@@ -9,6 +9,8 @@ import struct
 import types
 
 APP_DIR_NAME = 'msgbox'
+PEER_CONFIG_FILE_NAME = 'peer'
+PEER_STATE_FILE_NAME = 'peer'
 
 def def_enum(name, typestring):
     types = typestring.split()
@@ -454,8 +456,8 @@ class XdgConfig(object):
     _xdg_info = None
 
     @staticmethod
-    def find_xdg_config_dir():
-        xdg = _find_xdg_info()
+    def find_config_dir():
+        xdg = _find_info()
         for d in xdg['cfg_dirs']:
             path = os.path.join(d, APP_DIR_NAME)
             if os.path.exists(path):
@@ -466,8 +468,8 @@ class XdgConfig(object):
         return None
 
     @staticmethod
-    def find_xdg_state_dir():
-        xdg = XdgConfig._find_xdg_info()
+    def find_state_dir():
+        xdg = XdgConfig._find_info()
         for d in xdg['data_dirs']:
             path = os.path.join(d, APP_DIR_NAME)
             if os.path.exists(path):
@@ -477,19 +479,19 @@ class XdgConfig(object):
             return os.path.join(data_home, APP_DIR_NAME)
 
     @staticmethod
-    def find_xdg_config_file(filename):
-        d = XdgConfig.find_xdg_config_dir()
+    def find_config_file(filename):
+        d = XdgConfig.find_config_dir()
         if d is not None: return os.path.join(d, filename)
 
     @staticmethod
-    def find_xdg_state_file(filename):
-        d = XdgConfig.find_xdg_state_dir()
+    def find_state_file(filename):
+        d = XdgConfig.find_state_dir()
         if d is not None: return os.path.join(d, filename)
 
     @staticmethod
-    def _find_xdg_info():
-        if XdgConfig._xdg_info is not None:
-            return XdgConfig._xdg_info
+    def _find_info():
+        if XdgConfig._info is not None:
+            return XdgConfig._info
 
         home = os.getenv('HOME')
 
@@ -511,9 +513,38 @@ class XdgConfig(object):
             os.getenv('XDG_DATA_DIRS', '/usr/local/share/:/usr/share/')
             .split(':'))
 
-        XdgConfig._xdg_info = {
+        XdgConfig._info = {
             'cfg_home': cfg_home,
             'cfg_dirs': cfg_dirs,
             'data_home': data_home,
             'data_dirs': data_dirs}
-        return XdgConfig._xdg_info
+        return XdgConfig._info
+
+
+class PeerConfig(object):
+    listen_address = None
+
+    # TODO: configuration validation with good error messages
+    # TODO: log-file config entry, with defaults from XDG
+    def __init__(self, obj):
+        self.peer_id = obj['peer']
+        if 'listen' in obj:
+            self.listen_address = Address.from_json(obj['listen'])
+        self.remote_addresses = map(Address.from_json, obj.get('remotes',[]))
+        self.state_file_path = self._find_state_file_path(obj)
+
+    @classmethod
+    def load_file(klass, filepath):
+        with open(filepath) as f:
+            return Config(json.load(f))
+
+    # can return a path to a file that doesn't exist yet
+    @staticmethod
+    def find_config_file_path():
+        return XdgConfig.find_config_file(PEER_CONFIG_FILE_NAME)
+
+    def _find_state_file_path(self, obj):
+        if 'state' in obj:
+            return obj['state']
+        # if not given in config file, fall back on XDG
+        return XdgConfig.find_state_file(PEER_STATE_FILE_NAME)

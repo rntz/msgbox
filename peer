@@ -10,9 +10,6 @@ import time
 
 from msgbox import *
 
-CONFIG_FILE_NAME = 'peer'
-STATE_FILE_NAME = 'peer'
-
 LISTEN_BACKLOG = 5
 
 # We delay approximately this long between connecting to remotes, to allow
@@ -37,38 +34,6 @@ globals().update({'LOG_' + l.upper(): i for i,l in LOG_LEVEL_NAMES.iteritems()})
 # exceptions
 # error thrown in a reader coro to indicate connection has closed.
 class ClosedError(Exception): pass
-
-
-class Config(object):
-    listen_address = None
-
-    # TODO: configuration validation with good error messages
-    # TODO: log-file config entry, with defaults from XDG
-    def __init__(self, obj):
-        self.peer_id = obj['peer']
-        if 'listen' in obj:
-            self.listen_address = Address.from_json(obj['listen'])
-        self.remote_addresses = map(Address.from_json, obj.get('remotes',[]))
-        self.state_file_path = self._find_state_file_path(obj)
-
-    @classmethod
-    def load_file(klass, filepath):
-        with open(filepath) as f:
-            return Config(json.load(f))
-
-    # can return a path to a file that doesn't exist yet
-    @staticmethod
-    def find_config_file_path():
-        return XdgConfig.find_xdg_config_file(CONFIG_FILE_NAME)
-
-    def _find_state_file_path(self, obj):
-        if 'state' in obj:
-            return obj['state']
-
-        # if not given in config file, fall back on XDG
-        d = XdgConfig.find_xdg_state_dir()
-        if d is not None:
-            return os.path.join(d, STATE_FILE_NAME)
 
 
 # Handles the socket we listen on incoming connections for
@@ -151,7 +116,7 @@ class OutgoingHandler(ConnHandler):
 
 
 # The mutable state (as opposed to mostly-static configuration) of a peer node.
-class State(Jsonable):
+class PeerState(Jsonable):
     def __init__(self, vclock=None, event_store=None):
         self.vclock = vclock if vclock is not None else VClock()
         self.event_store = (event_store
@@ -164,8 +129,8 @@ class State(Jsonable):
 
     @staticmethod
     def from_json(obj):
-        return State(VClock.from_json(obj['vclock']),
-                     EventStore.from_json(obj['events']))
+        return PeerState(VClock.from_json(obj['vclock']),
+                         EventStore.from_json(obj['events']))
 
 
 # deals with IO and shit
@@ -186,11 +151,11 @@ class Peer(object):
         self.state_file_path = config.state_file_path
         if os.path.exists(self.state_file_path):
             with open(self.state_file_path) as f:
-                self.state = State.from_json(json.load(f))
+                self.state = PeerState.from_json(json.load(f))
         else:
             # create the file with an empty state
             self.debug('creating fresh state file')
-            self.state = State(VClock(), EventStore())
+            self.state = PeerState(VClock(), EventStore())
             with open(self.state_file_path, 'w') as f:
                 json.dump(self.state.to_json(), f)
 
@@ -492,19 +457,19 @@ class Options(optparse.OptionParser):
     # TODO: usage info
     def __init__(self):
         optparse.OptionParser.__init__(self)
-        self.add_option('-c', '--config-file', dest='config_file', default=None)
+        self.add_option('-c', '--config-file', dest='config_file')
 
 def parse_config(options):
     def test(cond, msg):
         if not cond: abort("Quitting: " + msg)
 
-    cfg_file = (options.config_file or Config.find_config_file_path())
+    cfg_file = (options.config_file or PeerConfig.find_config_file_path())
     # TODO: indicate where one was expected or could be put
     test(cfg_file, "Don't know where to find config file. Is HOME set?")
     test(os.path.exists(cfg_file),
          "No config file found; expecting one at " + cfg_file)
 
-    cfg = Config.load_file(cfg_file)
+    cfg = PeerConfig.load_file(cfg_file)
 
     test(cfg.state_file_path,
          "Don't know where to find state file. Is HOME set?")

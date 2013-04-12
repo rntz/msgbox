@@ -6,6 +6,7 @@ import json
 import os, os.path
 import socket
 import struct
+import time
 import types
 
 APP_DIR_NAME = 'msgbox'
@@ -52,6 +53,24 @@ class Timer(object):
         self.callback()
         self.fired = True
         return True
+
+# Timer that tracks multiple callbacks.
+class MultiTimer(object):
+    def __init__(self):
+        self.timers = []
+
+    def add(self, delay, callback):
+        assert delay >= 0
+        if delay == 0:
+            callback()
+        else:
+            self.timers.append(Timer(time.time() + delay, callback))
+
+    def check(self):
+        now = time.time()
+        self.timers = [t for t in self.timers if not t.try_fire(now)]
+        return (reduce(min, (t.left(now) for t in self.timers))
+                if self.timers else None)
 
 
 # The send-multiqueue
@@ -299,14 +318,13 @@ class Event(Jsonable):
 # increment on send or receive.
 class VClock(Jsonable):
     def __init__(self, init=None):
-        self.times = {}
+        self.times = defaultdict(lambda: 0)
         if init is not None:
             self.times.update(init)
 
     def copy(self): return VClock(self.times)
 
     def already_happened(self, uid, time):
-        if uid not in self.times: return False
         return time <= self.times[uid]
 
     def tick(self, uid):
@@ -320,13 +338,13 @@ class VClock(Jsonable):
         return self.time_for(uid)
 
     def update(self, uid, value):
-        assert value >= self.times.get(uid,0)
+        assert value > self.times[uid]
         self.times[uid] = value
 
     def merge(self, other):
         for k,v in other.iteritems():
             assert v >= 0
-            self[k] = max(self.get(k,0), v)
+            self[k] = max(self[k], v)
 
     # imitations of methods from dict
     def __contains__(self, x): return x in self.times
@@ -341,7 +359,7 @@ class VClock(Jsonable):
         return VClock(obj)
 
     def to_json(self):
-        return dict(self.times)
+        return {k: v for k,v in self.times.iteritems() if v != 0}
 
 
 # The event store
@@ -453,11 +471,11 @@ class MessageDispatcher(asyncore.dispatcher):
 class InvalidConfig(Exception): pass
 
 class XdgConfig(object):
-    _xdg_info = None
+    _info = None
 
     @staticmethod
     def find_config_dir():
-        xdg = _find_info()
+        xdg = XdgConfig._find_info()
         for d in xdg['cfg_dirs']:
             path = os.path.join(d, APP_DIR_NAME)
             if os.path.exists(path):

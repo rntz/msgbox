@@ -31,13 +31,13 @@ portably-displayable form.
 | title    | very short description of what event is about (roughly <=40 chars)                 |
 |          | eg. "tweet from @arntzenius", "message in #freenode from rntz"                     |
 |----------+------------------------------------------------------------------------------------|
-| summary  | short description of content of event (roughly <=140 chars)                        |
-|          | if not present and `message` is <=140 chars, use `message`                         |
-|          | if `message` is >140 chars, use first 137 chars of `message` followed by "..."     |
+| brief    | short description of content of event (roughly <=140 chars)                        |
+|          | if not present and `body` is <=140 chars, use `body`                               |
+|          | if `body` is >140 chars, use first 137 chars of `body` followed by "..."           |
 |          | eg. "@arntzenius: woo I'm tweeting"                                                |
 |----------+------------------------------------------------------------------------------------|
-| message  | full description of content of event                                               |
-|          | if not present, use `summary`                                                      |
+| body     | full description of content of event                                               |
+|          | if not present, use `brief`                                                        |
 |----------+------------------------------------------------------------------------------------|
 | urgent   | true if notification needs urgent attention                                        |
 |          | default: false                                                                     |

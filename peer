@@ -141,7 +141,7 @@ class Peer(object):
         self.queue = MultiQueue()
         self.socket_map = {}    # for dispatchers
         self.peers = {}
-        self.timers = []
+        self.timer = MultiTimer()
 
         self.peer_id = config.peer_id
         self.listen_address = config.listen_address
@@ -155,7 +155,7 @@ class Peer(object):
         else:
             # create the file with an empty state
             self.debug('creating fresh state file')
-            self.state = PeerState(VClock(), EventStore())
+            self.state = PeerState()
             with open(self.state_file_path, 'w') as f:
                 json.dump(self.state.to_json(), f)
 
@@ -202,7 +202,7 @@ class Peer(object):
         # self.debug('looping')
         assert self.socket_map
         timeout = self.check_timers()
-        asyncore.loop(count=1, map = self.socket_map, timeout=timeout)
+        asyncore.loop(count=1, map=self.socket_map, timeout=timeout)
 
     def shutdown(self):
         # Shutdown is surprisingly simple: we do nothing. Our open sockets will
@@ -211,17 +211,10 @@ class Peer(object):
 
     # ----- Timers ----
     def add_timer(self, delay, callback):
-        assert delay >= 0
-        if delay == 0:
-            callback()
-        else:
-            self.timers.append(Timer(time.time() + delay, callback))
+        self.timer.add(delay, callback)
 
     def check_timers(self):
-        now = time.time()
-        self.timers = [t for t in self.timers if not t.try_fire(now)]
-        return reduce(min, (t.left(now) for t in self.timers),
-                      ASYNCORE_TIMEOUT_S)
+        return min(ASYNCORE_TIMEOUT_S, self.timer.check() or ASYNCORE_TIMEOUT_S)
 
     # ----- Remote connections ----
     def try_remote_connect(self):
@@ -300,8 +293,8 @@ class Peer(object):
             elif node_type == NODE_CLIENT:
                 # send updates for client
                 events = self.updates_for(hello.vclock)
-                message = ([MessageEvent(e) for e in events]
-                           + [MessageUptodate()])
+                messages = ([MessageEvent(e) for e in events]
+                            + [MessageUptodate()])
                 self.send_many([sock], messages)
 
                 while True:
@@ -410,7 +403,6 @@ class Peer(object):
         # we should never receive events whose source is _us_ from another peer.
         assert event.source != self.peer_id or recvd_from is None
         # ... then add it to the store, update our vclock, ...
-        # TODO: schedule state-save?
         self.state.vclock.update(event.source, event.timestamp)
         self.state.event_store.add(event)
         self.mark_dirty()

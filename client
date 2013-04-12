@@ -2,6 +2,7 @@
 import json
 import optparse
 import socket
+import subprocess
 import sys
 
 from msgbox import *
@@ -9,19 +10,58 @@ from msgbox import *
 CLIENT_CONFIG_FILE_NAME = 'client'
 CLIENT_STATE_FILE_NAME = 'client'
 
+# TODO: duplicates code from peer
+
+# We put at least this much time between saving our state
+SAVE_STATE_DELAY_S = 0.5
+
+# The timeout to pass to asyncore.loop(). We'll be stuck in a syscall and unable
+# to respond to signals for approximately this long, so keep it small to allow
+# ctrl-C etc. to work reasonably well.
+ASYNCORE_TIMEOUT_S = 1.0
+
+# log levels
+LOG_LEVELS = 'debug info warn error'.split()
+LOG_LEVEL_NAMES = {i: n for i,n in enumerate(LOG_LEVELS)}
+def log_level_name(i): return LOG_LEVEL_NAMES[i]
+globals().update({'LOG_' + l.upper(): i for i,l in LOG_LEVEL_NAMES.iteritems()})
+
+
+# Options and configuration
 class Options(optparse.OptionParser):
     def __init__(self):
         optparse.OptionParser.__init__(self)
         self.add_option('-r', '--remote', dest='address')
         self.add_option('-c', '--config-file', dest='config_file')
-        self.add_option(None, '--peer-config-file', dest='peer_config_file')
+        self.add_option('--peer-config-file', dest='peer_config_file')
 
 class ClientConfig(object):
     address = None
 
-    def __init__(self, obj):
-        if 'remote' in obj:
-            self.address = Address.from_json(obj['remote'])
+    def __init__(self, options, obj):
+        if options.address is not None:
+            address = Address.from_str(options.address)
+        elif 'remote' in obj:
+            address = Address.from_json(obj['remote'])
+        else:
+            # try grabbing address from peer config
+            filename = (options.peer_config_file or
+                        PeerConfig.find_config_file_path())
+            if filename and os.path.exists(filename):
+                address = PeerConfig.load_file(filename).listen_address
+                # the listen address given in the peer config file might refer
+                # to one of localhost's external IP address, or might be
+                # 0.0.0.0; in either case, we need to point it at localhost
+                # instead.
+                if address.type == ADDRESS_TCP:
+                    address = AddressTCP('localhost', address.port)
+            else:
+                # TODO: better error message
+                test(False, "Could not determine peer address to connect to")
+
+        assert isinstance(address, Address)
+        self.address = address
+
         self.state_file_path = self._find_state_file_path(obj)
 
     def _find_state_file_path(self, obj):
@@ -29,13 +69,183 @@ class ClientConfig(object):
             return obj['state']
         return XdgConfig.find_state_file(CLIENT_STATE_FILE_NAME)
 
-class ClientState(object):
-    pass
+class ClientState(Jsonable):
+    def __init__(self, vclock=None):
+        self.vclock = vclock if vclock is not None else VClock()
+
+    def to_json(self):
+        return {'vclock': self.vclock.to_json()}
+
+    @staticmethod
+    def from_json(obj):
+        return ClientState(VClock.from_json(obj['vclock']))
+
+
+class ConnHandler(MessageDispatcher):
+    def __init__(self, parent, **kwargs):
+        MessageDispatcher.__init__(self, **kwargs)
+        self.parent = parent
+        self.reader_coro = parent.reader_coro(self)
+        self.reader_coro.next()
+
+    def writable(self): return False
+    def handle_message(self, message):
+        self.reader_coro.send(message)
+
+
+# TODO: this shares some code (notably, the state-updating code and the logging
+# code) with Peer. refactor.
+class Client(object):
+    def __init__(self, config):
+        self.timer = MultiTimer()
+
+        assert isinstance(config.address, Address)
+        self.address = config.address
+
+        # initialize our state
+        self.state_file_path = config.state_file_path
+        if os.path.exists(self.state_file_path):
+            with open(self.state_file_path) as f:
+                self.state = ClientState.from_json(json.load(f))
+        else:
+            # create the file with an empty state
+            self.state = ClientState()
+            with open(self.state_file_path, 'w') as f:
+                json.dump(self.state.to_json(), f)
+
+        # 3-valued flag indicating our save-state:
+        #
+        # - 'clean': file up-to-date and we can save to it freely
+        #
+        # - 'waiting': file up-to-date, but we've saved recently so if it
+        #   changes we need to wait before saving again
+        #
+        # - 'dirty': file not up-to-date and we must save once timer expires.
+        self.state_state = 'clean'
+
+    # ----- Logging -----
+    def log(self, level, msg, *args):
+        # TODO: real logging
+        name = log_level_name(level).upper()
+        print >>sys.stderr, '%s: %s' % (name, (msg % args))
+
+    def debug(self, msg, *args): self.log(LOG_DEBUG, msg, *args)
+    def info(self, msg, *args): self.log(LOG_INFO, msg, *args)
+    def warn(self, msg, *args): self.log(LOG_WARN, msg, *args)
+
+    # ----- Main loop -----
+    def run(self):
+        # connect to peer address.
+        sock = socket.socket(self.address.socket_address_family(),
+                             socket.SOCK_STREAM)
+        # FIXME: handle connection failure.
+        sock.connect(self.address.socket_address())
+
+        # Send hello message.
+        # FIXME: handle failure
+        sock.sendall(MessageHelloClient(self.state.vclock).serialize())
+
+        # Set up handler.
+        self.handler = ConnHandler(self, sock=sock)
+
+        # Wait for and handle events from peer.
+        while True: self.loop()
+
+        # TODO: graceful shutdown
+
+    def loop(self):
+        timeout = min(ASYNCORE_TIMEOUT_S,
+                      self.timer.check() or ASYNCORE_TIMEOUT_S)
+        asyncore.loop(count=1, timeout=timeout)
+
+    def reader_coro(self, sock):
+        while True:
+            msg = yield
+            # ignore uptodate
+            if msg.type == MESSAGE_UPTODATE: continue
+            assert msg.type == MESSAGE_EVENT # TODO: handle bad message types
+            self.handle_event(msg.event)
+
+    def handle_event(self, event):
+        if self.state.vclock.already_happened(event.source, event.timestamp):
+            self.warn("Peer sent us event that we already knew about." +
+                      "Buggy peer?")
+            return
+        # update our vclock and schedule a state save
+        self.state.vclock.update(event.source, event.timestamp)
+        self.mark_dirty()
+        # pass it to the user script
+        self.notify_user(event.data)
+
+    # for now this is hardcoded to use `notify-send`.
+    # TODO: make this scriptable.
+    #
+    # BIG TODO: store notifications (of at least some kinds) and provide a way
+    # to browse them, delete them, etc.
+    def notify_user(self, obj):
+        # figure out summary and body
+        def shorten(maxlen, val):
+            msg = str(val)
+            return msg if len(msg) <= maxlen else msg[:maxlen-3] + '...'
+
+        TITLELEN = 40
+        BRIEFLEN = 140
+
+        if not isinstance(obj, dict):
+            self.warn("Event data is not JSON object")
+            return
+
+        title = obj.get('title')
+        brief = obj.get('brief', obj.get('body'))
+
+        if title and brief:
+            args = [shorten(TITLELEN, title), shorten(BRIEFLEN, brief)]
+        elif title:
+            args = [shorten(TITLELEN, title)]
+        elif brief and len(brief) <= TITLELEN:
+            args = [brief]
+        elif brief:
+            # not sure this is the best way to handle this
+            args = [shorten(TITLELEN, brief), shorten(BRIEFLEN, brief)]
+        else:
+            self.warn('Event has no title, brief, or body')
+            return
+
+        retcode = subprocess.call(['notify-send', '--'] + args)
+        if retcode != 0:
+            self.warn("notify-send had nonzero return code %d", retcode)
+
+    def mark_dirty(self):
+        if self.state_state == 'clean':
+            self.save_state()
+        else:
+            self.debug("delaying saving state")
+            self.state_state = 'dirty'
+
+    def save_state(self):
+        self.debug("saving state to file %s" % self.state_file_path)
+        with open(self.state_file_path, 'w') as f:
+            json.dump(self.state.to_json(), f)
+        self.state_state = 'waiting'
+        self.timer.add(SAVE_STATE_DELAY_S, self.can_save_state)
+
+    def can_save_state(self):
+        if self.state_state == 'dirty':
+            self.debug("performing delayed state-save")
+            self.save_state()
+        else:
+            assert self.state_state == 'waiting'
+            self.state_state = 'clean'
+
+
+def abort(msg):
+    print >>sys.stderr, msg
+    sys.exit(1)
+
+def test(cond, msg):
+    if not cond: abort('Quitting: ' + msg)
 
 def main(args):
-    def test(cond, msg):
-        if not cond: abort(msg + ', quitting')
-
     # Parse options
     parser = Options()
     (options, args) = parser.parse_args(args)
@@ -43,35 +253,19 @@ def main(args):
     # Load config file
     cfgfile = (options.config_file or
                XdgConfig.find_config_file(CLIENT_CONFIG_FILE_NAME))
-    if cfgfile is not None:
-        test(os.path.exists(cfgfile), "Specified config file does not exist")
+    if cfgfile and os.path.exists(cfgfile):
         with open(cfgfile) as f:
-            cfg = ClientConfig(json.load(f))
+            cfgobj = json.load(f)
     else:
-        cfg = ClientConfig({})
+        cfgobj = {}
 
-    # Determine address
-    if options.address is not None:
-        address = Address.from_str(options.address)
-    elif cfg.address is not None:
-        address = cfg.address
-    else:
-        # try grabbing address from peer config
-        filename = (options.peer_config_file or
-                    PeerConfig.find_config_file_path())
-        if filename and os.path.exists(filename):
-            address = PeerConfig.load_file(filename).listen_address
-        else:
-            # TODO: better error message
-            test(False, "Could not determine peer address to connect to")
+    cfg = ClientConfig(options, cfgobj)
+    test(cfg.state_file_path,
+         "Don't know where to find state file. Is HOME set?")
 
-    assert isinstance(address, Address)
+    client = Client(cfg)
+    client.run()
 
-    # Load our state file
-    raise NotImplementedError()     # FIXME
-
-    # Connect to address
-    raise NotImplementedError()     # FIXME
-
-
-if __name__ == "__main__": main(sys.argv[1:])
+if __name__ == "__main__":
+    try: main(sys.argv[1:])
+    except KeyboardInterrupt: sys.exit(1)

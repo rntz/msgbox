@@ -34,9 +34,9 @@ def main(args):
     if address:
         address = Address.from_str(address)
     else:
-        cfg_file = options.config_file or Config.find_config_file_path()
+        cfg_file = options.config_file or PeerConfig.find_config_file_path()
         test(cfg_file and os.path.exists(cfg_file), "No config file found")
-        address = Config.load_file(cfg_file).listen_address
+        address = PeerConfig.load_file(cfg_file).listen_address
 
     # we figure out what JSON to send...
     if from_args:

@@ -1,0 +1,77 @@
+#!/usr/bin/env python
+import json
+import optparse
+import socket
+import sys
+
+from msgbox import *
+
+CLIENT_CONFIG_FILE_NAME = 'client'
+CLIENT_STATE_FILE_NAME = 'client'
+
+class Options(optparse.OptionParser):
+    def __init__(self):
+        optparse.OptionParser.__init__(self)
+        self.add_option('-r', '--remote', dest='address')
+        self.add_option('-c', '--config-file', dest='config_file')
+        self.add_option(None, '--peer-config-file', dest='peer_config_file')
+
+class ClientConfig(object):
+    address = None
+
+    def __init__(self, obj):
+        if 'remote' in obj:
+            self.address = Address.from_json(obj['remote'])
+        self.state_file_path = self._find_state_file_path(obj)
+
+    def _find_state_file_path(self, obj):
+        if 'state' in obj:
+            return obj['state']
+        return XdgConfig.find_state_file(CLIENT_STATE_FILE_NAME)
+
+class ClientState(object):
+    pass
+
+def main(args):
+    def test(cond, msg):
+        if not cond: abort(msg + ', quitting')
+
+    # Parse options
+    parser = Options()
+    (options, args) = parser.parse_args(args)
+
+    # Load config file
+    cfgfile = (options.config_file or
+               XdgConfig.find_config_file(CLIENT_CONFIG_FILE_NAME))
+    if cfgfile is not None:
+        test(os.path.exists(cfgfile), "Specified config file does not exist")
+        with open(cfgfile) as f:
+            cfg = ClientConfig(json.load(f))
+    else:
+        cfg = ClientConfig({})
+
+    # Determine address
+    if options.address is not None:
+        address = Address.from_str(options.address)
+    elif cfg.address is not None:
+        address = cfg.address
+    else:
+        # try grabbing address from peer config
+        filename = (options.peer_config_file or
+                    PeerConfig.find_config_file_path())
+        if filename and os.path.exists(filename):
+            address = PeerConfig.load_file(filename).listen_address
+        else:
+            # TODO: better error message
+            test(False, "Could not determine peer address to connect to")
+
+    assert isinstance(address, Address)
+
+    # Load our state file
+    raise NotImplementedError()     # FIXME
+
+    # Connect to address
+    raise NotImplementedError()     # FIXME
+
+
+if __name__ == "__main__": main(sys.argv[1:])

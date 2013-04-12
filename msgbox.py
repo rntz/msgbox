@@ -536,7 +536,7 @@ class PeerConfig(object):
     @classmethod
     def load_file(klass, filepath):
         with open(filepath) as f:
-            return Config(json.load(f))
+            return PeerConfig(json.load(f))
 
     # can return a path to a file that doesn't exist yet
     @staticmethod

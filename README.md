@@ -8,8 +8,9 @@ That's what it's supposed to be, anyway. It's not quite finished yet, though it
 does seem to work, as of 2013-04-14.
 
 I'm making it because I want an easy way to be notified if and when, eg.,
-someone pings me on IRC. It could also be used as the basis for, say,
-synchronizing a TODO-list across multiple machines. TODO: explain how.
+someone pings me on IRC; but if I'm not online when this happens, I'd like to
+know about them once I *do* get online. It could also be used as the basis for,
+say, synchronizing a TODO-list across multiple machines. TODO: explain how.
 
 It's "distributed" in that it doesn't have a central point of failure; every
 node running `msgbox-peer` keeps as much information as it can get, and

@@ -1,0 +1,4 @@
+{
+  "peer": "tcp://localhost:51723",
+  "state": "example/client-state"
+}

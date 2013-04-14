@@ -13,7 +13,7 @@ def abort(msg):
 class Options(optparse.OptionParser):
     def __init__(self):
         optparse.OptionParser.__init__(self)
-        self.add_option('-r', '--remote', dest='address', default=None)
+        self.add_option('-p', '--peer-address', dest='address', default=None)
         self.add_option('-c', '--config-file', dest='config_file', default=None)
         self.add_option('-a', '--args', dest='from_args', action='store_true')
         self.add_option('-f', '--field', dest='fields', action='append',

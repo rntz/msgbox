@@ -32,7 +32,7 @@ globals().update(dict(
 class Options(optparse.OptionParser):
     def __init__(self):
         optparse.OptionParser.__init__(self)
-        self.add_option('-r', '--remote', dest='address')
+        self.add_option('-p', '--peer-address', dest='address')
         self.add_option('-c', '--config-file', dest='config_file')
         self.add_option('--peer-config-file', dest='peer_config_file')
 
@@ -42,8 +42,8 @@ class ClientConfig(object):
     def __init__(self, options, obj):
         if options.address is not None:
             address = Address.from_str(options.address)
-        elif 'remote' in obj:
-            address = Address.from_json(obj['remote'])
+        elif 'peer' in obj:
+            address = Address.from_json(obj['peer'])
         else:
             # try grabbing address from peer config
             filename = (options.peer_config_file or
@@ -89,9 +89,16 @@ class ConnHandler(MessageDispatcher):
         self.reader_coro = parent.reader_coro(self)
         self.reader_coro.next()
 
+    def readable(self): return True
     def writable(self): return False
     def handle_message(self, message):
         self.reader_coro.send(message)
+
+    def handle_error(self):
+        raise NotImplementedError()     # FIXME
+
+    def handle_close(self):
+        raise NotImplementedError()     # FIXME
 
 
 # TODO: this shares some code (notably, the state-updating code and the logging
@@ -141,15 +148,18 @@ class Client(object):
                              socket.SOCK_STREAM)
         # FIXME: handle connection failure.
         sock.connect(self.address.socket_address())
+        self.debug("connected, sending hello")
 
         # Send hello message.
         # FIXME: handle failure
         sock.sendall(MessageHelloClient(self.state.vclock).serialize())
+        self.debug("sent hello")
 
         # Set up handler.
         self.handler = ConnHandler(self, sock=sock)
 
         # Wait for and handle events from peer.
+        self.debug("entering main loop")
         while True: self.loop()
 
         # TODO: graceful shutdown

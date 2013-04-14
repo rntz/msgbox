@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import asyncore
 import errno
+import itertools
 import json
 import optparse
 import signal
@@ -141,7 +142,8 @@ class Peer(object):
     def __init__(self, config):
         self.queue = MultiQueue()
         self.socket_map = {}    # for dispatchers
-        self.peers = {}
+        self.peers = set()
+        self.clients = set()
         self.timer = MultiTimer()
 
         self.peer_id = config.peer_id
@@ -272,7 +274,7 @@ class Peer(object):
             hello = yield
             assert hello.type == MESSAGE_HELLO    # TODO: error handling
             assert hello.node_type in NODE_TYPES # TODO: error handling
-            node_type = hello.node_type
+            node_type = sock.node_type = hello.node_type
 
             # this code could be so much cleaner if `yield from` was available.
             if node_type == NODE_PEER:
@@ -293,11 +295,16 @@ class Peer(object):
                     self.handle_event(message.event, recvd_from=sock)
 
             elif node_type == NODE_CLIENT:
+                self.add_client(sock)
+
                 # send updates for client
                 events = self.updates_for(hello.vclock)
                 messages = ([MessageEvent(e) for e in events]
                             + [MessageUptodate()])
                 self.send_many([sock], messages)
+
+                # FIXME: need to put client socket somewhere so that we can send
+                # it all new events as we get them
 
                 while True:
                     message = yield
@@ -338,6 +345,8 @@ class Peer(object):
 
     def outgoing_coro(self, sock):
         try:
+            sock.node_type = NODE_PEER
+
             # TODO: remove debug print
             self.debug('starting outgoing coro for %s', sock)
 
@@ -376,15 +385,25 @@ class Peer(object):
 
     # ----- Peer utility methods -----
     def add_peer(self, sock, peer_id):
-        assert peer_id not in self.peers
-        assert getattr(sock, 'peer_id', None) is None
+        assert sock.node_type == NODE_PEER
+        assert sock not in self.peers
+        assert not hasattr(sock, 'peer_id')
         sock.peer_id = peer_id
-        self.peers[peer_id] = sock
+        self.peers.add(sock)
+
+    def add_client(self, sock):
+        assert sock.node_type == NODE_CLIENT
+        self.clients.add(sock)
 
     def disconnect(self, sock):
-        if hasattr(sock, 'peer_id'):
-            assert sock is self.peers[sock.peer_id]
-            del self.peers[sock.peer_id]
+        if sock.node_type == NODE_PEER:
+            assert hasattr(sock, 'peer_id')
+            assert sock in self.peers
+            self.peers.remove(sock)
+        elif sock.node_type == NODE_CLIENT:
+            assert sock in self.clients
+            self.clients.remove(sock)
+        assert sock not in self.peers.union(self.clients)
         sock.close()
 
     def updates_for(self, vclock):
@@ -408,9 +427,10 @@ class Peer(object):
         self.state.vclock.update(event.source, event.timestamp)
         self.state.event_store.add(event)
         self.mark_dirty()
-        # ... and send it on to all our neighboring peers (except the one that
+        # ... and send it on to all our peers and clients (except the one that
         # sent it to us)
-        dests = (x for x in self.peers.values() if x is not recvd_from)
+        dests = itertools.chain((x for x in self.peers if x is not recvd_from),
+                                iter(self.clients))
         self.send_one(dests, MessageEvent(event))
 
     def mark_dirty(self):

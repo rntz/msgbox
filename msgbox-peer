@@ -303,9 +303,6 @@ class Peer(object):
                             + [MessageUptodate()])
                 self.send_many([sock], messages)
 
-                # FIXME: need to put client socket somewhere so that we can send
-                # it all new events as we get them
-
                 while True:
                     message = yield
                     if message.type == MESSAGE_GEN_EVENT:

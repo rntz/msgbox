@@ -279,7 +279,6 @@ class Peer(object):
             # this code could be so much cleaner if `yield from` was available.
             if node_type == NODE_PEER:
                 self.add_peer(sock, hello.peer_id)
-
                 # send welcome response and updates for peer
                 events = self.updates_for(hello.vclock)
                 messages = ([MessageWelcome(self.peer_id, self.state.vclock)]
@@ -287,47 +286,34 @@ class Peer(object):
                             + [MessageUptodate()])
                 self.send_many([sock], messages)
 
-                # now, accept events from our peer
-                while True:
-                    message = yield
-                    # TODO: handle bad message types
-                    assert message.type == MESSAGE_EVENT
-                    self.handle_event(message.event, recvd_from=sock)
-
             elif node_type == NODE_CLIENT:
                 self.add_client(sock)
-
                 # send updates for client
                 events = self.updates_for(hello.vclock)
                 messages = ([MessageEvent(e) for e in events]
                             + [MessageUptodate()])
                 self.send_many([sock], messages)
 
-                while True:
-                    message = yield
-                    if message.type == MESSAGE_GEN_EVENT:
-                        self.gen_event(message.data)
-                    elif message.type == MESSAGE_EVENT:
-                        self.handle_event(message.event, recvd_from=sock)
-                    else:
-                        # TODO: handle bad event types
-                        assert False # bad message type
-
             elif node_type == NODE_SENDER:
                 # just read events from them.
-                while True:
-                    message = yield
-                    if message.type == MESSAGE_GEN_EVENT:
-                        self.gen_event(message.data)
-                    elif message.type == MESSAGE_EVENT:
-                        self.handle_event(message.event, recvd_from=sock)
-                    else:
-                        # TODO: handle bad event types
-                        assert False # bad message type
+                pass
 
             else:
                 assert False        # unreachable case
-            assert False        # unreachable
+
+            # accept messages
+            while True:
+                message = yield
+                if message.type == MESSAGE_EVENT:
+                    self.handle_event(message.event, recvd_from=sock)
+                elif message.type == MESSAGE_GEN_EVENT:
+                    # only clients & senders (not peers) can send GEN_EVENT
+                    # messages. TODO: handle NODE_PEER error case.
+                    assert node_type in [NODE_CLIENT, NODE_SENDER]
+                    self.gen_event(message.data)
+                else:
+                    # TODO: handle bad message types
+                    assert False
 
         except ClosedError:
             # TODO: better log formatting for sockets
